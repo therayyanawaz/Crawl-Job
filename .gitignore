@@ -1,0 +1,27 @@
+node_modules/
+
+# Compiled output
+dist/
+
+# Scraped data and runtime state
+storage/
+
+# Deploy artefacts
+deploy.log
+.backups/
+
+# Production secrets — never commit
+deploy/env.production
+.env.local
+
+dist/
+storage/
+.env
+log.txt
+.vscode/
+.idea/
+*.log
+*.tmp
+tmp/
+.cache/
+.DS_Store
