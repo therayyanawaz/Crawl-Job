@@ -1,0 +1,14 @@
+{
+  "profile": "medium",
+  "requestsStarted": 1500,
+  "simulatedDurationSeconds": 420,
+  "failureModulo": 11,
+  "latencyBaseMs": 110,
+  "latencyJitterMs": 90,
+  "jobsExtracted": 920,
+  "jobsDeduplicated": 280,
+  "jobsStored": 500,
+  "jobsPersistenceFailed": 40,
+  "rateLimitHits": 70,
+  "proxyFailures": 45
+}

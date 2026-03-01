@@ -12,7 +12,7 @@
 #
 # What it installs:
 #   1. System packages (build tools, libs needed by Playwright/Chromium)
-#   2. Node.js 22.x LTS via NodeSource
+#   2. Node.js 20.x LTS via NodeSource
 #   3. npm project dependencies (npm ci)
 #   4. Playwright browsers + OS-level deps (Chromium, Firefox, WebKit)
 #   5. Creates required storage directories
@@ -52,6 +52,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 info "Project directory: ${PROJECT_DIR}"
 info "Running as root, real user: ${REAL_USER} (home: ${REAL_HOME})"
+NODE_MAJOR_VERSION=20
 
 # Detect Ubuntu version
 if [[ -f /etc/os-release ]]; then
@@ -150,39 +151,63 @@ step 3 "Configuring PostgreSQL"
 systemctl start postgresql
 systemctl enable postgresql
 
-# Load credentials from .env if it exists, otherwise use defaults
-DB_NAME="crawl_job"
-DB_USER="testrayyan1"
-DB_PASS="t24P4cu>\$I£\""
+extract_env_value() {
+    local key="$1"
+    local file="$2"
+    if [[ ! -f "$file" ]]; then
+        echo ""
+        return
+    fi
+    grep "^${key}=" "$file" | tail -n 1 | cut -d'=' -f2- | tr -d '"' | tr -d "'" || true
+}
 
-if [[ -f "${PROJECT_DIR}/.env" ]]; then
-    info "Reading credentials from existing .env..."
-    # Simple grep/sed to extract vars without sourcing (safety)
-    DB_NAME=$(grep "^PGDATABASE=" "${PROJECT_DIR}/.env" | cut -d'=' -f2 | tr -d '"' || echo "$DB_NAME")
-    DB_USER=$(grep "^PGUSER=" "${PROJECT_DIR}/.env" | cut -d'=' -f2 | tr -d '"' || echo "$DB_USER")
-    DB_PASS=$(grep "^PGPASSWORD=" "${PROJECT_DIR}/.env" | cut -d'=' -f2 | tr -d '"' || echo "$DB_PASS")
+# Required DB settings: read from environment first, then .env aliases.
+DB_HOST="${DB_HOST:-$(extract_env_value "DB_HOST" "${PROJECT_DIR}/.env")}"
+DB_PORT="${DB_PORT:-$(extract_env_value "DB_PORT" "${PROJECT_DIR}/.env")}"
+DB_NAME="${DB_NAME:-$(extract_env_value "DB_NAME" "${PROJECT_DIR}/.env")}"
+DB_USER="${DB_USER:-$(extract_env_value "DB_USER" "${PROJECT_DIR}/.env")}"
+DB_PASS="${DB_PASSWORD:-$(extract_env_value "DB_PASSWORD" "${PROJECT_DIR}/.env")}"
+
+if [[ -z "${DB_HOST}" ]]; then DB_HOST="$(extract_env_value "PGHOST" "${PROJECT_DIR}/.env")"; fi
+if [[ -z "${DB_PORT}" ]]; then DB_PORT="$(extract_env_value "PGPORT" "${PROJECT_DIR}/.env")"; fi
+if [[ -z "${DB_NAME}" ]]; then DB_NAME="$(extract_env_value "PGDATABASE" "${PROJECT_DIR}/.env")"; fi
+if [[ -z "${DB_USER}" ]]; then DB_USER="$(extract_env_value "PGUSER" "${PROJECT_DIR}/.env")"; fi
+if [[ -z "${DB_PASS}" ]]; then DB_PASS="$(extract_env_value "PGPASSWORD" "${PROJECT_DIR}/.env")"; fi
+
+MISSING_VARS=()
+[[ -z "${DB_HOST}" ]] && MISSING_VARS+=("DB_HOST")
+[[ -z "${DB_PORT}" ]] && MISSING_VARS+=("DB_PORT")
+[[ -z "${DB_NAME}" ]] && MISSING_VARS+=("DB_NAME")
+[[ -z "${DB_USER}" ]] && MISSING_VARS+=("DB_USER")
+[[ -z "${DB_PASS}" ]] && MISSING_VARS+=("DB_PASSWORD")
+if [[ ${#MISSING_VARS[@]} -gt 0 ]]; then
+    error "Missing required DB vars: ${MISSING_VARS[*]}. Set environment vars or add them to ${PROJECT_DIR}/.env"
 fi
 
-info "Setting up database: ${DB_NAME} for user: ${DB_USER}"
+if [[ "${DB_HOST}" != "localhost" && "${DB_HOST}" != "127.0.0.1" ]]; then
+    error "scripts/setup-server.sh provisions local PostgreSQL only. Use DB_HOST=localhost (or 127.0.0.1)."
+fi
+
+info "Setting up database ${DB_NAME} on ${DB_HOST}:${DB_PORT} for user: ${DB_USER}"
 
 # 1. Create User if not exists
-sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" | grep -q 1 || \
-    sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASS}';"
+sudo -u postgres psql -h "${DB_HOST}" -p "${DB_PORT}" -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" | grep -q 1 || \
+    sudo -u postgres psql -h "${DB_HOST}" -p "${DB_PORT}" -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASS}';"
 
 # 2. Create Database if not exists
-sudo -u postgres psql -lqt | cut -d \| -f 1 | grep -qw "${DB_NAME}" || \
-    sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
+sudo -u postgres psql -h "${DB_HOST}" -p "${DB_PORT}" -lqt | cut -d \| -f 1 | grep -qw "${DB_NAME}" || \
+    sudo -u postgres psql -h "${DB_HOST}" -p "${DB_PORT}" -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
 
 # 3. Grant privileges
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
-sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};"
+sudo -u postgres psql -h "${DB_HOST}" -p "${DB_PORT}" -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
+sudo -u postgres psql -h "${DB_HOST}" -p "${DB_PORT}" -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};"
 
 success "PostgreSQL configured."
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STEP 4: Node.js 22.x LTS
+# STEP 4: Node.js 20.x LTS
 # ═══════════════════════════════════════════════════════════════════════════════
-step 4 "Installing Node.js 22.x LTS"
+step 4 "Installing Node.js ${NODE_MAJOR_VERSION}.x LTS"
 
 # Check if Node is already installed and at the right major version
 EXISTING_NODE_VERSION=""
@@ -191,17 +216,17 @@ if command -v node &>/dev/null; then
     info "Existing Node.js version: ${EXISTING_NODE_VERSION}"
 fi
 
-if [[ "$EXISTING_NODE_VERSION" == v22.* ]]; then
-    success "Node.js 22.x already installed (${EXISTING_NODE_VERSION}). Skipping."
+if [[ "$EXISTING_NODE_VERSION" == v${NODE_MAJOR_VERSION}.* ]]; then
+    success "Node.js ${NODE_MAJOR_VERSION}.x already installed (${EXISTING_NODE_VERSION}). Skipping."
 else
-    info "Installing Node.js 22.x via NodeSource..."
+    info "Installing Node.js ${NODE_MAJOR_VERSION}.x via NodeSource..."
 
     # Remove old NodeSource list if present
     rm -f /etc/apt/sources.list.d/nodesource.list 2>/dev/null || true
     rm -f /etc/apt/keyrings/nodesource.gpg 2>/dev/null || true
 
     # NodeSource setup script (official method)
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR_VERSION}.x" | bash -
 
     apt-get install -y nodejs || error "Failed to install Node.js"
 

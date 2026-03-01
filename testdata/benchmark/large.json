@@ -1,0 +1,14 @@
+{
+  "profile": "large",
+  "requestsStarted": 6000,
+  "simulatedDurationSeconds": 1200,
+  "failureModulo": 10,
+  "latencyBaseMs": 125,
+  "latencyJitterMs": 140,
+  "jobsExtracted": 3600,
+  "jobsDeduplicated": 1260,
+  "jobsStored": 2050,
+  "jobsPersistenceFailed": 180,
+  "rateLimitHits": 420,
+  "proxyFailures": 190
+}

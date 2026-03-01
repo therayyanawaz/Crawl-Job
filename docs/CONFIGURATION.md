@@ -16,11 +16,16 @@ Use `.env.example` as a ready-to-copy template.
 | Variable | Type | Default | Notes |
 |---|---|---|---|
 | `DATABASE_URL` | string | unset | Full connection string. If set, it takes precedence over individual `PG*` values. |
-| `PGHOST` | string | `localhost` | DB host when `DATABASE_URL` is not used. |
+| `DB_HOST` | string | unset | Preferred DB host variable. Mapped internally to `PGHOST` when present. |
+| `DB_PORT` | integer | unset | Preferred DB port variable. Mapped internally to `PGPORT` when present. |
+| `DB_USER` | string | unset | Preferred DB user variable. Mapped internally to `PGUSER` when present. |
+| `DB_PASSWORD` | string | unset | Preferred DB password variable. Mapped internally to `PGPASSWORD` when present. |
+| `DB_NAME` | string | unset | Preferred DB name variable. Mapped internally to `PGDATABASE` when present. |
+| `PGHOST` | string | `localhost` | Compatibility alias for DB host when `DATABASE_URL` is not used. |
 | `PGPORT` | integer | `5432` | DB port. |
-| `PGUSER` | string | unset | DB user. |
-| `PGPASSWORD` | string | unset | DB password. |
-| `PGDATABASE` | string | `crawl_job` | DB name. |
+| `PGUSER` | string | unset | Compatibility alias for DB user. |
+| `PGPASSWORD` | string | unset | Compatibility alias for DB password. |
+| `PGDATABASE` | string | `crawl_job` | Compatibility alias for DB name. |
 | `PGSSL` | boolean (strict-true) | `false` | Enable TLS for DB connection. |
 | `PG_POOL_MAX` | number | `10` | Max pooled DB connections. |
 
@@ -32,6 +37,7 @@ Use `.env.example` as a ready-to-copy template.
 | `PROXY_MIN_COUNT` | number | `5` | Required validated proxies before run continues. |
 | `PROXY_REFRESH_INTERVAL_MINUTES` | number | `15` | Pool revalidation interval. |
 | `MIN_JOBS_BEFORE_HEADLESS` | number | `15` | If stored jobs below this threshold, headless activates (unless paid mode already active). |
+| `HEADLESS_SKIP_THRESHOLD` | number | `25` | Skip headless if pre-collected API+HTTP jobs already meet this threshold. |
 | `HEADLESS_MAX_CONCURRENCY` | number | `5` | Upper cap for headless crawler concurrency. |
 | `ENABLE_DOMAIN_RATE_LIMITING` | boolean (unless-false) | `true` | Enable domain queue gate and dynamic delays. |
 | `ENABLE_INDEED` | boolean (strict-true) | `false` | Enable Indeed headless routes and seeds. |
@@ -65,7 +71,7 @@ Use `.env.example` as a ready-to-copy template.
 
 | Variable | Type | Default | Notes |
 |---|---|---|---|
-| `SERPER_API_KEY` | string | baked-in fallback present | Set your own key for production use. |
+| `SERPER_API_KEY` | string | `""` | Set your own key for production use. |
 
 ## Storage and Cloud Upload
 
@@ -121,12 +127,17 @@ Use `.env.example` as a ready-to-copy template.
 |---|---|---|---|
 | `CRAWLEE_LOG_LEVEL` | string | `""` | Crawlee log level (effective default behavior resolves to `INFO`). |
 | `METRICS_FLUSH_INTERVAL_MS` | number | `120000` | Metrics snapshot flush interval. |
+| `PERSIST_CONCURRENCY` | number | `15` | Max number of concurrent DB persistence tasks in queue. |
 
 ## Recommended Minimal `.env` for Local Runs
 
 ```bash
-DATABASE_URL=postgresql://postgres:password@localhost:5432/crawl_job
-SERPER_API_KEY=your_real_key
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=<db_user>
+DB_PASSWORD=<db_password>
+DB_NAME=crawl_job
+SERPER_API_KEY=<serper_api_key>
 PROXY_URLS=
 ENABLE_DOMAIN_RATE_LIMITING=true
 ```

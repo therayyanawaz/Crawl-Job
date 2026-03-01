@@ -77,7 +77,7 @@ export const envSchema = z.object({
     DELETE_AFTER_DAYS: numFromEnv.default(90),
     HEALTH_CHECK_INTERVAL_MS: numFromEnv.default(5 * 60_000),
 
-    SERPER_API_KEY: z.string().default('03a6a5832aa7008001fd5dbaff3de09eea0d4ac2'),
+    SERPER_API_KEY: z.string().default(''),
 
     CLOUD_UPLOAD_ENABLED: boolStrictTrue.default(false),
     CRAWLEE_STORAGE_DIR: z.string().default(path.join(process.cwd(), 'storage')),

@@ -31,6 +31,12 @@ import type { StorableJob } from './utils/jobStore.js';
 import { enqueuePersistenceTask } from './utils/persistenceQueue.js';
 import { runJobsParallel } from './utils/jobBatchRunner.js';
 import { decideHeadlessLaunch, resolveHeadlessSkipThreshold } from './utils/headlessDecision.js';
+import {
+    recordJobDeduplicated,
+    recordJobExtracted,
+    recordJobPersistenceFailed,
+    recordJobStored,
+} from './utils/metrics.js';
 
 // ── Source imports
 import { fetchSerperJobs } from './sources/serperApi.js';
@@ -87,9 +93,11 @@ async function saveJobFromSource(raw: RawJobListing, dataset: Dataset): Promise<
         log.debug(`[Orchestrator] Validation failed for "${raw.title}": ${err}`);
         return false;
     }
+    recordJobExtracted();
 
     const { isDuplicate, reason } = await isDuplicateJob(clean);
     if (isDuplicate) {
+        recordJobDeduplicated();
         log.debug(`[Orchestrator] DUPLICATE (${reason}): "${clean.title}" @ "${clean.company}"`);
         return false;
     }
@@ -97,8 +105,18 @@ async function saveJobFromSource(raw: RawJobListing, dataset: Dataset): Promise<
     try {
         await dataset.pushData(clean);
         enqueuePersistenceTask(async () => {
-            await markJobAsStored(clean);
-            await saveJobToDb(clean as unknown as StorableJob);
+            try {
+                await markJobAsStored(clean);
+                const insertedId = await saveJobToDb(clean as unknown as StorableJob);
+                if (insertedId !== null) {
+                    recordJobStored();
+                } else {
+                    recordJobPersistenceFailed();
+                }
+            } catch {
+                recordJobPersistenceFailed();
+                throw new Error(`[Orchestrator] Persistence failed for "${clean.title}" @ "${clean.company}"`);
+            }
         });
         log.info(`[Orchestrator] ✓ Stored [${clean.source}]: "${clean.title}" @ "${clean.company}"`);
         return true;

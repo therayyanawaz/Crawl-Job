@@ -15,7 +15,7 @@
 # The script will:
 #   1. Install system packages (git, curl, build-essential, chromium-browser)
 #   2. Create the crawl-job system user
-#   3. Install nvm + Node 20 LTS for that user
+#   3. Install nvm + Node version from .nvmrc for that user
 #   4. Install Playwright browser binaries
 #   5. Create /etc/crawl-job/ config directory
 #   6. Deploy the systemd unit file
@@ -35,7 +35,7 @@ fi
 PROJECT_DIR="/opt/crawl-job"
 SERVICE_USER="crawl-job"
 SERVICE_GROUP="crawl-job"
-NODE_VERSION="20"   # Major version — nvm will install the latest 20.x LTS
+NODE_VERSION="$(cat "${PROJECT_DIR}/.nvmrc" 2>/dev/null || echo "v20.19.0")"
 SERVICE_UNIT_SRC="${PROJECT_DIR}/deploy/crawl-job.service"
 SERVICE_UNIT_DEST="/etc/systemd/system/crawl-job.service"
 ENV_DIR="/etc/crawl-job"
@@ -112,10 +112,10 @@ chmod 750 "$PROJECT_DIR"
 echo "✓ $PROJECT_DIR ownership: ${SERVICE_USER}:${SERVICE_GROUP} (750)"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 3: Install nvm + Node 20 LTS for the service user
+# STEP 3: Install nvm + Node from .nvmrc for the service user
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "── Step 3: nvm + Node ${NODE_VERSION} LTS"
+echo "── Step 3: nvm + Node ${NODE_VERSION}"
 
 # Run nvm install as the service user using sudo -u + bash login shell
 sudo -u "$SERVICE_USER" bash -l -c "
@@ -133,7 +133,7 @@ sudo -u "$SERVICE_USER" bash -l -c "
     export NVM_DIR=\"\$HOME/.nvm\"
     source \"\$NVM_DIR/nvm.sh\"
 
-    # Install Node 20 LTS
+    # Install Node version pinned by .nvmrc
     nvm install ${NODE_VERSION}
     nvm alias default ${NODE_VERSION}
     nvm use default

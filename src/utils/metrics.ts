@@ -42,11 +42,23 @@ export interface MetricsSnapshot {
     /** Success rate 0–100. */
     successRatePct: number;
 
-    /** Total job records pushed to Dataset. */
+    /** Total validated job records extracted and evaluated by dedup. */
     jobsExtracted: number;
 
     /** Job records skipped by dedup. */
     jobsDeduplicated: number;
+
+    /** Job records successfully persisted to DB. */
+    jobsStored: number;
+
+    /** Job records that failed to persist to DB. */
+    jobsPersistenceFailed: number;
+
+    /** Extraction throughput over total uptime. */
+    jobsPerMinute: number;
+
+    /** Percent of extracted jobs skipped by dedup (0–100). */
+    dedupRatioPct: number;
 
     /** HTTP 429 or 403 events recorded across all domains. */
     rateLimitHits: number;
@@ -59,6 +71,9 @@ export interface MetricsSnapshot {
 
     /** Average response time in ms over the last 100 requests. */
     avgResponseTimeMs: number;
+
+    /** p95 response time in ms over the last 100 requests. */
+    p95ResponseTimeMs: number;
 
     /** Peak memory usage recorded (RSS in MB). */
     peakMemoryMb: number;
@@ -84,6 +99,8 @@ let requestsSucceeded = 0;
 let requestsFailed = 0;
 let jobsExtracted = 0;
 let jobsDeduplicated = 0;
+let jobsStored = 0;
+let jobsPersistenceFailed = 0;
 let rateLimitHits = 0;
 let proxyFailures = 0;
 let peakMemoryMb = 0;
@@ -111,6 +128,8 @@ export function initMetrics(): void {
     requestsFailed = 0;
     jobsExtracted = 0;
     jobsDeduplicated = 0;
+    jobsStored = 0;
+    jobsPersistenceFailed = 0;
     rateLimitHits = 0;
     proxyFailures = 0;
     peakMemoryMb = 0;
@@ -182,6 +201,16 @@ export function recordJobDeduplicated(): void {
     jobsDeduplicated++;
 }
 
+/** Call after a successful DB insert for a job. */
+export function recordJobStored(): void {
+    jobsStored++;
+}
+
+/** Call when a job fails DB persistence. */
+export function recordJobPersistenceFailed(): void {
+    jobsPersistenceFailed++;
+}
+
 /** Call when a 429 / 403 rate-limit event is detected. */
 export function recordRateLimitHit(): void {
     rateLimitHits++;
@@ -210,8 +239,20 @@ export function getMetricsSnapshot(): MetricsSnapshot {
     const avgResponseTimeMs = responseTimes.length > 0
         ? Math.round(responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length)
         : 0;
+    const p95ResponseTimeMs = responseTimes.length > 0
+        ? (() => {
+            const sorted = [...responseTimes].sort((a, b) => a - b);
+            const index = Math.max(0, Math.ceil(sorted.length * 0.95) - 1);
+            return Math.round(sorted[index]);
+        })()
+        : 0;
 
     const currentMemoryMb = Math.round(process.memoryUsage().rss / 1_048_576);
+    const uptimeMinutes = Math.max(1 / 60, (now - crawlStartedAt) / 60_000);
+    const dedupRatioPct = jobsExtracted > 0
+        ? Math.round((jobsDeduplicated / jobsExtracted) * 1000) / 10
+        : 0;
+    const jobsPerMinute = Math.round((jobsExtracted / uptimeMinutes) * 10) / 10;
 
     return {
         snapshotAt: new Date().toISOString(),
@@ -221,10 +262,15 @@ export function getMetricsSnapshot(): MetricsSnapshot {
         successRatePct,
         jobsExtracted,
         jobsDeduplicated,
+        jobsStored,
+        jobsPersistenceFailed,
+        jobsPerMinute,
+        dedupRatioPct,
         rateLimitHits,
         proxyFailures,
         requestsPerMinute: rpmWindow.length,  // count within rolling 60s = RPM
         avgResponseTimeMs,
+        p95ResponseTimeMs,
         peakMemoryMb: Math.round(peakMemoryMb),
         currentMemoryMb,
         crawlStartedAt,
@@ -260,8 +306,9 @@ export function logMetricsSummary(): void {
     log.info(
         `[Metrics] ✓${s.requestsSucceeded} ✗${s.requestsFailed} ` +
         `(${s.successRatePct}% ok) | ` +
-        `jobs:${s.jobsExtracted} dedup:${s.jobsDeduplicated} | ` +
-        `rpm:${s.requestsPerMinute} avgRt:${s.avgResponseTimeMs}ms | ` +
+        `jobs:${s.jobsExtracted} dedup:${s.jobsDeduplicated} stored:${s.jobsStored} persistFail:${s.jobsPersistenceFailed} | ` +
+        `jobs/min:${s.jobsPerMinute} dedupRatio:${s.dedupRatioPct}% | ` +
+        `rpm:${s.requestsPerMinute} avgRt:${s.avgResponseTimeMs}ms p95Rt:${s.p95ResponseTimeMs}ms | ` +
         `429s:${s.rateLimitHits} proxyFail:${s.proxyFailures} | ` +
         `mem:${s.currentMemoryMb}MB ` +
         (minsAgo !== null ? `| lastJob:${minsAgo}m ago` : '| lastJob:never')

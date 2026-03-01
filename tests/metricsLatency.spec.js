@@ -25,6 +25,9 @@ const testCases = [
                 if (snapshot.avgResponseTimeMs <= 0) {
                     throw new Error(`expected avgResponseTimeMs > 0, got ${snapshot.avgResponseTimeMs}`);
                 }
+                if (snapshot.p95ResponseTimeMs <= 0) {
+                    throw new Error(`expected p95ResponseTimeMs > 0, got ${snapshot.p95ResponseTimeMs}`);
+                }
             } finally {
                 closeMetrics();
             }
@@ -45,6 +48,9 @@ const testCases = [
                 const snapshot = getMetricsSnapshot();
                 if (!Number.isFinite(snapshot.avgResponseTimeMs)) {
                     throw new Error(`expected finite avgResponseTimeMs, got ${snapshot.avgResponseTimeMs}`);
+                }
+                if (!Number.isFinite(snapshot.p95ResponseTimeMs)) {
+                    throw new Error(`expected finite p95ResponseTimeMs, got ${snapshot.p95ResponseTimeMs}`);
                 }
             } finally {
                 closeMetrics();

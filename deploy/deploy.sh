@@ -31,7 +31,7 @@ IFS=$'\n\t'
 
 PROJECT_DIR="/opt/crawl-job"
 SERVICE_NAME="crawl-job"
-NODE_VERSION="v20.19.0"
+NODE_VERSION="$(cat "${PROJECT_DIR}/.nvmrc" 2>/dev/null || echo "v20.19.0")"
 NVM_DIR="/home/crawl-job/.nvm"
 NODE_BIN="${NVM_DIR}/versions/node/${NODE_VERSION}/bin"
 NODE="${NODE_BIN}/node"
@@ -75,6 +75,16 @@ info "Node: $("$NODE" --version)"
 info "npm:  $("$NPM" --version)"
 info "Project: $PROJECT_DIR"
 info "Service: $SERVICE_NAME"
+
+# Validate required DB env variables before deployment proceeds.
+ENV_FILE="/etc/crawl-job/env"
+if [[ -f "$ENV_FILE" ]]; then
+    info "Validating environment file: $ENV_FILE"
+    "$NODE" "${PROJECT_DIR}/scripts/validate-env.mjs" --file "$ENV_FILE" \
+        || error "Environment validation failed. Fix $ENV_FILE and re-run deploy."
+else
+    warn "$ENV_FILE not found. Skipping env validation."
+fi
 
 # ─── Step 1: Git pull (only with --update flag) ───────────────────────────────
 
