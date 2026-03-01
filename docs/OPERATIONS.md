@@ -29,6 +29,12 @@ npm run start:prod
 npm run typecheck
 ```
 
+### Validate required environment variables
+
+```bash
+npm run env:check
+```
+
 ## 2. Database Operations
 
 ### Run migration
@@ -152,6 +158,7 @@ During headless run:
 
 - `deploy/setup.sh` - one-time setup script for Linux server + systemd
 - `scripts/setup-server.sh` - broader setup path including PostgreSQL and Playwright deps
+- `docs/FIRST_RUN.md` - exact first-run checklist for local/server setup
 
 ### Deployment Updates
 

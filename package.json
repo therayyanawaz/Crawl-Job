@@ -28,6 +28,7 @@
     "maintenance:dry": "tsx src/maintenance.ts maintenance --dry-run",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:migrate:check": "tsx -e \"import('./src/utils/db.js').then(m=>m.pingDb()).then(ok=>{ console.log(ok?'✓ DB reachable':'✗ DB unreachable'); process.exit(ok?0:1); })\" ",
+    "env:check": "node scripts/validate-env.mjs",
     "testsprite": "npx @testsprite/testsprite-mcp@latest"
   },
   "keywords": ["crawl-job", "web-scraping", "playwright", "crawlee", "india-jobs", "typescript", "postgresql", "ollama"],
