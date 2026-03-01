@@ -77,6 +77,7 @@ import {
     getPersistConcurrency,
     getPersistenceQueueStats,
 } from './utils/persistenceQueue.js';
+import { decideHeadlessLaunch } from './utils/headlessDecision.js';
 import 'dotenv/config';
 import { env } from './config/env.js';
 
@@ -728,14 +729,24 @@ async function runCrawler() {
     });
 
     // 4. Run headless Playwright (Cutshort, Foundit, Shine, TimesJobs, Wellfound + optional Indeed/LinkedIn)
-    if (orchestratorResult.headlessNeeded) {
+    const preCollectedApiJobs = apiJobsCount + orchestratorResult.jobsCollectedBeforeHeadless;
+    const mainHeadlessDecision = decideHeadlessLaunch(preCollectedApiJobs, env.HEADLESS_SKIP_THRESHOLD);
+    const shouldLaunchHeadless = orchestratorResult.headlessNeeded && mainHeadlessDecision.shouldLaunch;
+
+    if (shouldLaunchHeadless) {
+        if (mainHeadlessDecision.partialCollection) {
+            log.warning(
+                `[Main] Partial API collection (${mainHeadlessDecision.preCollectedJobs}/${mainHeadlessDecision.threshold}). ` +
+                'Launching headless crawl.'
+            );
+        }
         log.info('\n' + '═'.repeat(60));
         log.info('  ACTIVATING TIER 2: HEADLESS BROWSER SCRAPING');
         log.info('  Cutshort + Foundit + Shine + TimesJobs + Wellfound via Playwright');
         log.info('═'.repeat(60));
         await runHeadlessCrawler(validPool, hasPaidProxy);
     } else {
-        log.info('[Main] ✓ Sufficient data collected. Headless skipped.');
+        log.info(`[Main] ✓ Headless skipped: ${mainHeadlessDecision.reason}`);
     }
 
     // 7. Cleanup

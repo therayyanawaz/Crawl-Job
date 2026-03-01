@@ -30,6 +30,7 @@ import { saveJobToDb } from './utils/jobStore.js';
 import type { StorableJob } from './utils/jobStore.js';
 import { enqueuePersistenceTask } from './utils/persistenceQueue.js';
 import { runJobsParallel } from './utils/jobBatchRunner.js';
+import { decideHeadlessLaunch, resolveHeadlessSkipThreshold } from './utils/headlessDecision.js';
 
 // ── Source imports
 import { fetchSerperJobs } from './sources/serperApi.js';
@@ -44,6 +45,7 @@ import type { RawJobListing, SearchQuery, SourceResult, SourceTier } from './sou
 
 /** Minimum combined job count before we skip headless (Tier 2). */
 const MIN_JOBS_BEFORE_HEADLESS = Number(process.env.MIN_JOBS_BEFORE_HEADLESS ?? 15);
+const HEADLESS_SKIP_THRESHOLD = resolveHeadlessSkipThreshold(process.env.HEADLESS_SKIP_THRESHOLD, 25);
 
 // ─── Zod Schema (aligned with STRATEGY.md § 7) ───────────────────────────────
 
@@ -167,6 +169,8 @@ export interface OrchestratorResult {
     totalValidationFailed: number;
     tierBreakdown: Record<string, { raw: number; stored: number }>;
     headlessNeeded: boolean;
+    jobsCollectedBeforeHeadless: number;
+    headlessSkipThreshold: number;
     durationMs: number;
 }
 
@@ -245,18 +249,24 @@ export async function runOrchestrator(
 
     // ── TIER 4 DECISION: Do we need headless? ─────────────────────────────────
     const combinedBeforeHeadless = totalStored;
-
-    // Headless activates if:
-    //   1. Paid proxy → ALWAYS run (safe, won't get blocked)
-    //   2. Free proxy → ONLY if we don't have enough data from Tiers 1-3
-    const headlessNeeded = hasPaidProxy || combinedBeforeHeadless < MIN_JOBS_BEFORE_HEADLESS;
+    const effectiveSkipThreshold = Math.max(MIN_JOBS_BEFORE_HEADLESS, HEADLESS_SKIP_THRESHOLD);
+    const launchDecision = decideHeadlessLaunch(combinedBeforeHeadless, effectiveSkipThreshold);
+    const headlessNeeded = launchDecision.shouldLaunch;
+    if (launchDecision.partialCollection) {
+        log.warning(
+            `[Orchestrator] Partial API collection (${launchDecision.preCollectedJobs}/${launchDecision.threshold}). ` +
+            'Launching headless fallback.'
+        );
+    }
 
     log.info(`\n${'─'.repeat(60)}`);
     log.info(`  HEADLESS DECISION`);
     log.info(`  Jobs stored so far : ${combinedBeforeHeadless}`);
     log.info(`  Minimum threshold  : ${MIN_JOBS_BEFORE_HEADLESS}`);
+    log.info(`  Skip threshold     : ${effectiveSkipThreshold}`);
     log.info(`  Paid proxy         : ${hasPaidProxy ? 'YES' : 'NO'}`);
-    log.info(`  Headless needed    : ${headlessNeeded ? 'YES — activating Tier 4' : 'NO — sufficient data from Tiers 1-3'}`);
+    log.info(`  Decision reason    : ${launchDecision.reason}`);
+    log.info(`  Headless needed    : ${headlessNeeded ? 'YES — activating Tier 4' : 'NO — skip Tier 4'}`);
     log.info(`${'─'.repeat(60)}`);
 
     // ── Final Summary ─────────────────────────────────────────────────────────
@@ -276,6 +286,8 @@ export async function runOrchestrator(
         totalValidationFailed,
         tierBreakdown,
         headlessNeeded,
+        jobsCollectedBeforeHeadless: combinedBeforeHeadless,
+        headlessSkipThreshold: effectiveSkipThreshold,
         durationMs,
     };
 }

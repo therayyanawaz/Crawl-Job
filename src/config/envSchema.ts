@@ -55,6 +55,7 @@ export const envSchema = z.object({
     PROXY_REFRESH_INTERVAL_MINUTES: numFromEnv.default(15),
 
     MIN_JOBS_BEFORE_HEADLESS: numFromEnv.default(15),
+    HEADLESS_SKIP_THRESHOLD: numFromEnv.default(25),
     HEADLESS_MAX_CONCURRENCY: numFromEnv.default(5),
     ENABLE_DOMAIN_RATE_LIMITING: boolUnlessFalse.default(true),
     ENABLE_INDEED: boolStrictTrue.default(false),
