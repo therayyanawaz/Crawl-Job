@@ -13,11 +13,12 @@ export interface LLMProviderConfig {
     timeoutMs: number;
     temperature: number;
     maxTokens: number;
+    fallback: LLMProviderConfig | null;
 }
 
 type ProviderConfigShape = Omit<
     LLMProviderConfig,
-    'provider' | 'modelId' | 'modelName' | 'apiKey' | 'timeoutMs' | 'temperature' | 'maxTokens'
+    'provider' | 'modelId' | 'modelName' | 'apiKey' | 'timeoutMs' | 'temperature' | 'maxTokens' | 'fallback'
 >;
 
 const PROVIDER_MAP: Record<string, ProviderConfigShape> = {
@@ -213,10 +214,17 @@ function buildConfig(fullModelId: string, envVars: Record<string, string>): LLMP
 
     let apiKey: string | null = null;
     if (requiresApiKey) {
-        const keyFromEnvFile = Object.entries(envVars)
-            .filter(([k]) => k !== 'MODEL_ID')
-            .map(([, v]) => v)
-            .find((v) => Boolean(v && v.length > 0)) ?? null;
+        const keyFromEnvFile = envVars[providerEnvVar]
+            ?? Object.entries(envVars)
+                .filter(([k, v]) => (
+                    k !== 'MODEL_ID'
+                    && k !== 'FALLBACK_MODEL_ID'
+                    && /(_API_KEY|_TOKEN)$/i.test(k)
+                    && Boolean(v && v.length > 0)
+                ))
+                .map(([, v]) => v)
+                .find((v) => Boolean(v && v.length > 0))
+            ?? null;
 
         apiKey = keyFromEnvFile ?? process.env[providerEnvVar] ?? null;
     }
@@ -226,7 +234,7 @@ function buildConfig(fullModelId: string, envVars: Record<string, string>): LLMP
         baseUrl = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
     }
 
-    return {
+    const baseConfig: LLMProviderConfig = {
         provider,
         modelId: fullModelId,
         modelName,
@@ -238,7 +246,17 @@ function buildConfig(fullModelId: string, envVars: Record<string, string>): LLMP
         timeoutMs: Number(process.env.LLM_TIMEOUT_MS ?? process.env.OLLAMA_TIMEOUT_MS ?? 120000),
         temperature: Number(process.env.LLM_TEMPERATURE ?? process.env.OLLAMA_TEMPERATURE ?? 0),
         maxTokens: Number(process.env.LLM_MAX_TOKENS ?? process.env.OLLAMA_MAX_TOKENS ?? 4096),
+        fallback: null,
     };
+
+    const fallbackId = envVars.FALLBACK_MODEL_ID;
+    if (fallbackId && fallbackId !== fullModelId) {
+        const fallback = buildConfig(fallbackId, envVars);
+        fallback.fallback = null;
+        baseConfig.fallback = fallback;
+    }
+
+    return baseConfig;
 }
 
 function getEnvVarName(provider: string): string {

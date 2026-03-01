@@ -1,6 +1,8 @@
 import TurndownService from 'turndown';
 import crypto from 'crypto';
 import { loadLLMConfig, type LLMProviderConfig } from '../utils/modelSelectBridge.js';
+import { getCachedResult, setCachedResult } from '../utils/llmCache.js';
+import { getDailySpend, isBudgetExceeded, recordTokenUsage } from '../utils/costGuard.js';
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
 
@@ -38,13 +40,44 @@ export interface NormalizedJobRecord extends OllamaJobRecord {
     id: string;
 }
 
+const JOB_EXTRACTION_SCHEMA = {
+    name: 'extract_jobs',
+    description: 'Extract all job listings from the page content as structured data',
+    parameters: {
+        type: 'object',
+        properties: {
+            jobs: {
+                type: 'array',
+                description: 'Array of all job listings found on the page',
+                items: {
+                    type: 'object',
+                    properties: {
+                        title: { type: 'string', description: 'Exact job title' },
+                        company: { type: 'string', description: 'Company name' },
+                        location: { type: 'string', description: 'City or "remote"' },
+                        experience: { type: 'string', description: 'Experience requirement as stated on page' },
+                        jobType: { type: 'string', enum: ['Full Time', 'Internship', 'Part Time', 'Contract'] },
+                        applyLink: { type: 'string', description: 'Full URL or relative path to apply' },
+                        isFresher: { type: 'boolean', description: 'True if experience <= 1 year or title contains intern/fresher/trainee/graduate/entry' },
+                        fresherReason: { type: 'string', description: 'One sentence why isFresher is true or false' },
+                        experienceNormalized: { type: 'string', enum: ['Fresher', '0-1 years', '1-2 years', '2+ years', 'Unknown'] },
+                        rawDescription: { type: ['string', 'null'], description: 'First 200 chars of job description or null' },
+                    },
+                    required: ['title', 'company', 'location', 'experience', 'jobType', 'applyLink', 'isFresher', 'fresherReason', 'experienceNormalized'],
+                },
+            },
+        },
+        required: ['jobs'],
+    },
+} as const;
+
 const SYSTEM_PROMPT = 'You are a structured data extraction engine. Always respond with valid JSON only. Never add commentary.';
 const ANTHROPIC_SYSTEM_PROMPT = 'You are a structured data extraction engine. You MUST respond with valid JSON only. No markdown. No code fences. No commentary. No explanation. Only raw JSON.';
-const ANTHROPIC_PROMPT_SUFFIX = 'IMPORTANT: Your entire response must be a valid JSON array. Start with [ and end with ].\nDo not include any other text, markdown, or explanation before or after the JSON.';
 const SUPPORTS_JSON_MODE = new Set([
     'openai', 'openai-codex', 'groq', 'cerebras',
     'openrouter', 'zai', 'volcengine', 'byteplus', 'minimax',
 ]);
+const OLLAMA_TOOL_MODELS = new Set(['llama3.3', 'llama3.1', 'qwen2.5', 'mistral', 'command-r']);
 
 const EXTRACTION_PROMPT = (markdown: string, pageUrl: string, sourceName: string) => `
 You are a job data extraction engine. Extract ALL job listings visible in the content below.
@@ -143,9 +176,11 @@ export function buildRequestPayload(
     const headers = buildHeaders(config);
 
     if (config.apiFormat === 'ollama') {
-        const body = {
+        const modelBase = config.modelName.split(':')[0].split('/').pop() ?? '';
+        const ollamaSupportsTools = [...OLLAMA_TOOL_MODELS].some((m) => modelBase.includes(m));
+
+        const body: Record<string, unknown> = {
             model: config.modelName,
-            format: 'json',
             options: {
                 temperature: config.temperature,
                 num_predict: config.maxTokens,
@@ -157,6 +192,15 @@ export function buildRequestPayload(
             ],
             stream: false,
         };
+
+        if (ollamaSupportsTools) {
+            body.tools = [{
+                type: 'function',
+                function: JOB_EXTRACTION_SCHEMA,
+            }];
+        } else {
+            body.format = 'json';
+        }
 
         return {
             url: `${trimTrailingSlash(config.baseUrl)}/api/chat`,
@@ -178,7 +222,14 @@ export function buildRequestPayload(
         };
 
         if (SUPPORTS_JSON_MODE.has(config.provider)) {
-            body.response_format = { type: 'json_object' };
+            body.tools = [{
+                type: 'function',
+                function: JOB_EXTRACTION_SCHEMA,
+            }];
+            body.tool_choice = {
+                type: 'function',
+                function: { name: 'extract_jobs' },
+            };
         }
 
         return {
@@ -193,7 +244,13 @@ export function buildRequestPayload(
             model: config.modelName,
             max_tokens: config.maxTokens,
             system: ANTHROPIC_SYSTEM_PROMPT,
-            messages: [{ role: 'user', content: `${prompt}\n\n${ANTHROPIC_PROMPT_SUFFIX}` }],
+            messages: [{ role: 'user', content: prompt }],
+            tools: [{
+                name: JOB_EXTRACTION_SCHEMA.name,
+                description: JOB_EXTRACTION_SCHEMA.description,
+                input_schema: JOB_EXTRACTION_SCHEMA.parameters,
+            }],
+            tool_choice: { type: 'tool', name: 'extract_jobs' },
         };
 
         return {
@@ -214,10 +271,19 @@ export function buildRequestPayload(
                 parts: [{ text: `${SYSTEM_PROMPT}\n\n${prompt}` }],
             },
         ],
+        tools: [{
+            functionDeclarations: [{
+                name: JOB_EXTRACTION_SCHEMA.name,
+                description: JOB_EXTRACTION_SCHEMA.description,
+                parameters: JOB_EXTRACTION_SCHEMA.parameters,
+            }],
+        }],
+        toolConfig: {
+            functionCallingConfig: { mode: 'ANY', allowedFunctionNames: ['extract_jobs'] },
+        },
         generationConfig: {
             temperature: config.temperature,
             maxOutputTokens: config.maxTokens,
-            responseMimeType: 'application/json',
         },
     };
 
@@ -259,27 +325,64 @@ export function parseResponseContent(config: LLMProviderConfig, data: unknown): 
 
     if (config.apiFormat === 'ollama') {
         const message = asRecord(root.message);
+        const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+        const firstToolCall = asRecord(toolCalls[0]);
+        const fn = asRecord(firstToolCall.function);
+        if (typeof fn.arguments === 'string') {
+            return fn.arguments;
+        }
+        if (fn.arguments && typeof fn.arguments === 'object') {
+            return JSON.stringify(fn.arguments);
+        }
+
         return contentToText(message.content);
     }
 
     if (config.apiFormat === 'anthropic') {
-        const blocks = Array.isArray(root.content) ? root.content : [];
-        const firstBlock = asRecord(blocks[0]);
-        return contentToText(firstBlock.text);
+        const blocks = Array.isArray(root.content) ? root.content.map((b) => asRecord(b)) : [];
+        const toolUseBlock = blocks.find((b) => b.type === 'tool_use');
+        if (toolUseBlock?.input && typeof toolUseBlock.input === 'object') {
+            return JSON.stringify(toolUseBlock.input);
+        }
+
+        const textBlock = blocks.find((b) => b.type === 'text');
+        return typeof textBlock?.text === 'string' ? textBlock.text : '';
     }
 
     if (config.apiFormat === 'gemini') {
         const candidates = Array.isArray(root.candidates) ? root.candidates : [];
         const firstCandidate = asRecord(candidates[0]);
         const content = asRecord(firstCandidate.content);
-        const parts = Array.isArray(content.parts) ? content.parts : [];
-        const firstPart = asRecord(parts[0]);
-        return contentToText(firstPart.text);
+        const parts = Array.isArray(content.parts) ? content.parts.map((p) => asRecord(p)) : [];
+        const functionPart = parts.find((p) => p.functionCall && typeof p.functionCall === 'object');
+        if (functionPart) {
+            const functionCall = asRecord(functionPart.functionCall);
+            if (functionCall.args && typeof functionCall.args === 'object') {
+                return JSON.stringify(functionCall.args);
+            }
+            if (typeof functionCall.args === 'string') {
+                return functionCall.args;
+            }
+        }
+
+        const textPart = parts.find((p) => typeof p.text === 'string');
+        return typeof textPart?.text === 'string' ? textPart.text : '';
     }
 
     const choices = Array.isArray(root.choices) ? root.choices : [];
     const firstChoice = asRecord(choices[0]);
     const message = asRecord(firstChoice.message);
+
+    const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+    const firstToolCall = asRecord(toolCalls[0]);
+    const fn = asRecord(firstToolCall.function);
+    if (typeof fn.arguments === 'string') {
+        return fn.arguments;
+    }
+    if (fn.arguments && typeof fn.arguments === 'object') {
+        return JSON.stringify(fn.arguments);
+    }
+
     return contentToText(message.content);
 }
 
@@ -288,38 +391,59 @@ function logTokenUsage(provider: string, data: unknown): void {
         return;
     }
 
+    const toNumber = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) ? value : 0;
     const d = data as Record<string, unknown>;
 
     if (d.usage && typeof d.usage === 'object') {
-        const u = d.usage as Record<string, number>;
-        if (u.total_tokens) {
+        const u = d.usage as Record<string, unknown>;
+        const promptTokens = toNumber(u.prompt_tokens);
+        const completionTokens = toNumber(u.completion_tokens);
+        const totalTokens = toNumber(u.total_tokens);
+
+        if (totalTokens > 0) {
             console.info(
-                `[LLMUsage] ${provider} — prompt: ${u.prompt_tokens ?? '?'} ` +
-                `completion: ${u.completion_tokens ?? '?'} ` +
-                `total: ${u.total_tokens} tokens`
+                `[LLMUsage] ${provider} — prompt: ${promptTokens || '?'} ` +
+                `completion: ${completionTokens || '?'} ` +
+                `total: ${totalTokens} tokens`
             );
+            recordTokenUsage(provider, totalTokens);
+            const spend = getDailySpend(provider);
+            console.info(`[CostGuard] ${provider} daily spend: $${spend.costUSD.toFixed(4)} (${spend.tokens} tokens)`);
             return;
         }
-    }
 
-    if (d.usage && typeof d.usage === 'object') {
-        const u = d.usage as Record<string, number>;
-        if (u.input_tokens) {
+        const inputTokens = toNumber(u.input_tokens);
+        const outputTokens = toNumber(u.output_tokens);
+        if (inputTokens > 0 || outputTokens > 0) {
+            const total = inputTokens + outputTokens;
             console.info(
-                `[LLMUsage] ${provider} — input: ${u.input_tokens} ` +
-                `output: ${u.output_tokens ?? '?'} tokens`
+                `[LLMUsage] ${provider} — input: ${inputTokens} ` +
+                `output: ${outputTokens || '?'} tokens`
             );
+            if (total > 0) {
+                recordTokenUsage(provider, total);
+                const spend = getDailySpend(provider);
+                console.info(`[CostGuard] ${provider} daily spend: $${spend.costUSD.toFixed(4)} (${spend.tokens} tokens)`);
+            }
             return;
         }
     }
 
     if (d.usageMetadata && typeof d.usageMetadata === 'object') {
-        const u = d.usageMetadata as Record<string, number>;
+        const u = d.usageMetadata as Record<string, unknown>;
+        const promptTokenCount = toNumber(u.promptTokenCount);
+        const outputTokenCount = toNumber(u.candidatesTokenCount);
+        const totalTokenCount = toNumber(u.totalTokenCount);
         console.info(
-            `[LLMUsage] ${provider} — prompt: ${u.promptTokenCount ?? '?'} ` +
-            `output: ${u.candidatesTokenCount ?? '?'} ` +
-            `total: ${u.totalTokenCount ?? '?'} tokens`
+            `[LLMUsage] ${provider} — prompt: ${promptTokenCount || '?'} ` +
+            `output: ${outputTokenCount || '?'} ` +
+            `total: ${totalTokenCount || '?'} tokens`
         );
+        if (totalTokenCount > 0) {
+            recordTokenUsage(provider, totalTokenCount);
+            const spend = getDailySpend(provider);
+            console.info(`[CostGuard] ${provider} daily spend: $${spend.costUSD.toFixed(4)} (${spend.tokens} tokens)`);
+        }
     }
 }
 
@@ -385,17 +509,28 @@ function getMarkdownCap(provider: string): number {
     return 5000;
 }
 
-export async function extractJobsFromHtml(
+async function _extractWithConfig(
+    config: LLMProviderConfig,
     html: string,
     pageUrl: string,
     sourceName: string,
-    ollamaBaseUrl: string = OLLAMA_BASE_URL
+    overrideBaseUrl?: string
 ): Promise<OllamaJobRecord[]> {
-    const config = loadLLMConfig();
-    const callerProvidedOverride = arguments.length >= 4;
-    const activeConfig: LLMProviderConfig = callerProvidedOverride
-        ? { ...config, baseUrl: ollamaBaseUrl }
+    const activeConfig: LLMProviderConfig = overrideBaseUrl
+        ? { ...config, baseUrl: overrideBaseUrl }
         : config;
+
+    const cached = getCachedResult(html);
+    if (cached) {
+        console.info(`[LLMCache] Cache hit for ${sourceName} (provider: ${cached.provider}, model: ${cached.modelId})`);
+        return (cached.jobs as OllamaJobRecord[]).map((j) =>
+            sanitizeJobRecord(j as Partial<OllamaJobRecord>, pageUrl, sourceName)
+        );
+    }
+
+    if (isBudgetExceeded(activeConfig.provider)) {
+        return [];
+    }
 
     const markdown = htmlToMarkdown(html, getMarkdownCap(activeConfig.provider));
     if (markdown.trim().length < 50) {
@@ -429,21 +564,29 @@ export async function extractJobsFromHtml(
         try {
             parsed = JSON.parse(raw);
         } catch {
-            const match = raw.match(/\[[\s\S]*\]/);
-            if (!match) {
+            const arrayMatch = raw.match(/\[[\s\S]*\]/);
+            const objectMatch = raw.match(/\{[\s\S]*\}/);
+            if (arrayMatch) {
+                parsed = JSON.parse(arrayMatch[0]);
+            } else if (objectMatch) {
+                parsed = JSON.parse(objectMatch[0]);
+            } else {
                 logExtractorWarn(`Failed to parse JSON from ${sourceName}: ${raw.slice(0, 200)}`);
                 return [];
             }
-            parsed = JSON.parse(match[0]);
         }
 
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
             const obj = parsed as Record<string, unknown>;
-            const arrayKey = Object.keys(obj).find((k) => Array.isArray(obj[k]));
-            if (arrayKey) {
-                parsed = obj[arrayKey];
+            if (Array.isArray(obj.jobs)) {
+                parsed = obj.jobs;
             } else {
-                return [sanitizeJobRecord(obj as Partial<OllamaJobRecord>, pageUrl, sourceName)];
+                const arrayKey = Object.keys(obj).find((k) => Array.isArray(obj[k]));
+                if (arrayKey) {
+                    parsed = obj[arrayKey];
+                } else {
+                    return [sanitizeJobRecord(obj as Partial<OllamaJobRecord>, pageUrl, sourceName)];
+                }
             }
         }
 
@@ -452,9 +595,45 @@ export async function extractJobsFromHtml(
             return [];
         }
 
-        return (parsed as OllamaJobRecord[]).map((j) => sanitizeJobRecord(j, pageUrl, sourceName));
+        const result = (parsed as OllamaJobRecord[]).map((j) => sanitizeJobRecord(j, pageUrl, sourceName));
+        setCachedResult(html, result, activeConfig.provider, activeConfig.modelId);
+        return result;
     } finally {
         llmQueueDepth--;
+    }
+}
+
+export async function extractJobsFromHtml(
+    html: string,
+    pageUrl: string,
+    sourceName: string,
+    ollamaBaseUrl: string = OLLAMA_BASE_URL
+): Promise<OllamaJobRecord[]> {
+    const config = loadLLMConfig();
+    const callerProvidedOverride = arguments.length >= 4;
+    const overrideBaseUrl = callerProvidedOverride ? ollamaBaseUrl : undefined;
+
+    try {
+        return await _extractWithConfig(config, html, pageUrl, sourceName, overrideBaseUrl);
+    } catch (primaryErr) {
+        if (config.fallback) {
+            console.warn(
+                `[LLMExtractor] Primary provider "${config.provider}" failed: ${(primaryErr as Error).message}. ` +
+                `Falling back to "${config.fallback.provider}/${config.fallback.modelName}"...`
+            );
+            try {
+                return await _extractWithConfig(config.fallback, html, pageUrl, sourceName, overrideBaseUrl);
+            } catch (fallbackErr) {
+                console.error(
+                    `[LLMExtractor] Fallback provider also failed: ${(fallbackErr as Error).message}. ` +
+                    `Returning empty results for ${sourceName}.`
+                );
+                return [];
+            }
+        }
+
+        console.error(`[LLMExtractor] Extraction failed (no fallback): ${(primaryErr as Error).message}`);
+        return [];
     }
 }
 

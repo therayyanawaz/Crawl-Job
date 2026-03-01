@@ -4,6 +4,8 @@ node_modules/
 # Build output and runtime state
 dist/
 storage/
+storage/llm-cache/
+storage/cost-guard.json
 coverage/
 .nyc_output/
 *.tsbuildinfo
