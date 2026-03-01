@@ -127,6 +127,22 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function markDomainSlotAcquired(request: any, domain: string): void {
+    request.userData = request.userData ?? {};
+    request.userData.__domainQueueDomain = domain;
+    request.userData.__domainQueueAcquired = true;
+}
+
+async function releaseDomainSlotIfAcquired(request: any): Promise<void> {
+    const userData = request?.userData;
+    if (!userData?.__domainQueueAcquired || !userData.__domainQueueDomain) {
+        return;
+    }
+
+    await releaseRequest(userData.__domainQueueDomain);
+    userData.__domainQueueAcquired = false;
+}
+
 // ─── Proxy Bootstrap ──────────────────────────────────────────────────────────
 
 async function buildProxyPool(): Promise<ValidatedProxy[]> {
@@ -385,96 +401,109 @@ const maxConcurrency = hasPaidProxy
                 }
 
                 await recordRequest(domain);
+                markDomainSlotAcquired(request, domain);
 
-                // Free proxies get 2x the delay to avoid triggering blocks
-                const baseDelay = getDelayForDomain(domain);
-                const actualDelay = hasPaidProxy ? baseDelay : baseDelay * 2;
-                hookLog.info(
-                    `[RateLimit] ${domain} (${config.riskLevel}) — ` +
-                    `waiting ${(actualDelay / 1000).toFixed(1)}s before navigation ` +
-                    `(${hasPaidProxy ? 'paid' : 'free'} proxy mode).`
-                );
-                await sleep(actualDelay);
+                try {
+                    // Free proxies get 2x the delay to avoid triggering blocks
+                    const baseDelay = getDelayForDomain(domain);
+                    const actualDelay = hasPaidProxy ? baseDelay : baseDelay * 2;
+                    hookLog.info(
+                        `[RateLimit] ${domain} (${config.riskLevel}) — ` +
+                        `waiting ${(actualDelay / 1000).toFixed(1)}s before navigation ` +
+                        `(${hasPaidProxy ? 'paid' : 'free'} proxy mode).`
+                    );
+                    await sleep(actualDelay);
 
-                const navTimeout =
-                    config.riskLevel === 'HIGH' ? 60_000 :
-                        config.riskLevel === 'MEDIUM' ? 45_000 : 30_000;
-                gotoOptions.timeout = navTimeout;
-                gotoOptions.waitUntil = 'domcontentloaded';
+                    const navTimeout =
+                        config.riskLevel === 'HIGH' ? 60_000 :
+                            config.riskLevel === 'MEDIUM' ? 45_000 : 30_000;
+                    gotoOptions.timeout = navTimeout;
+                    gotoOptions.waitUntil = 'domcontentloaded';
+                } catch (err) {
+                    await releaseDomainSlotIfAcquired(request);
+                    throw err;
+                }
             },
         ],
 
         // ── Post-Navigation Hook ──────────────────────────────────────────────
         postNavigationHooks: [
             async ({ request, response, page, log: hookLog }) => {
-                const domain = extractDomain(request.url);
-                await releaseRequest(domain);
+                try {
+                    const startedAt = (request as any).__startedAt as number | undefined;
+                    if (startedAt) recordRequestSuccess(Date.now() - startedAt);
+                    else recordRequestSuccess(0);
 
-                const startedAt = (request as any).__startedAt as number | undefined;
-                if (startedAt) recordRequestSuccess(Date.now() - startedAt);
-                else recordRequestSuccess(0);
+                    if (!ENABLE_RATE_LIMITING) return;
 
-                if (!ENABLE_RATE_LIMITING) return;
+                    const domain = extractDomain(request.url);
 
-                if (response && detectRateLimitByStatus(response)) {
-                    recordRateLimitHit();
-                    await handleViolation(domain, 'HTTP rate-limit/block', response.status());
-                    return;
+                    if (response && detectRateLimitByStatus(response)) {
+                        recordRateLimitHit();
+                        await handleViolation(domain, 'HTTP rate-limit/block', response.status());
+                        return;
+                    }
+
+                    const blocked = await isBlocked(page);
+                    if (blocked) {
+                        recordRateLimitHit();
+                        await handleViolation(domain, 'Soft block / CAPTCHA detected', null);
+                        return;
+                    }
+
+                    recordSuccess(domain);
+                } finally {
+                    await releaseDomainSlotIfAcquired(request);
                 }
-
-                const blocked = await isBlocked(page);
-                if (blocked) {
-                    recordRateLimitHit();
-                    await handleViolation(domain, 'Soft block / CAPTCHA detected', null);
-                    return;
-                }
-
-                recordSuccess(domain);
             },
         ],
 
         // ── Failed Request Handler (STRATEGY.md § 6 Error Rules) ────────────────
         failedRequestHandler: async ({ request, response, log: reqLog, session }) => {
-            const domain = extractDomain(request.url);
-            const status = response?.status();
+            try {
+                const domain = extractDomain(request.url);
+                const status = response?.status();
 
-            recordRequestFailed();
+                recordRequestFailed();
 
-            // Rule 1: Soft block (429 Too Many Requests)
-            if (status === 429) {
-                reqLog.warning(`[${domain}] Rate limited (429) — backing off ${request.retryCount} min`);
-                if (session) session.markBad();
-                recordRateLimitHit();
-                await handleViolation(domain, `HTTP 429 rate-limit`, status);
-                // Exponential backoff: 1min × retry count (per strategy doc)
-                await sleep(60_000 * Math.max(request.retryCount, 1));
-            }
+                // Rule 1: Soft block (429 Too Many Requests)
+                if (status === 429) {
+                    reqLog.warning(`[${domain}] Rate limited (429) — backing off ${request.retryCount} min`);
+                    if (session) session.markBad();
+                    recordRateLimitHit();
+                    await handleViolation(domain, `HTTP 429 rate-limit`, status);
+                    // Exponential backoff: 1min × retry count (per strategy doc)
+                    await sleep(60_000 * Math.max(request.retryCount, 1));
+                }
 
-            // Rule 2: Hard block (403 Forbidden)
-            else if (status === 403) {
-                reqLog.error(`[${domain}] Hard blocked (403) — flagging for proxy escalation`);
-                if (session) session.markBad();
-                recordRateLimitHit();
-                request.userData.needsResidentialProxy = true;
-                await handleViolation(domain, `HTTP 403 hard block on final retry`, status);
-            }
+                // Rule 2: Hard block (403 Forbidden)
+                else if (status === 403) {
+                    reqLog.error(`[${domain}] Hard blocked (403) — flagging for proxy escalation`);
+                    if (session) session.markBad();
+                    recordRateLimitHit();
+                    request.userData.needsResidentialProxy = true;
+                    await handleViolation(domain, `HTTP 403 hard block on final retry`, status);
+                }
 
-            // Rule 3: Proxy auth failure
-            else if (status === 407) {
-                reqLog.warning(`[${domain}] Proxy authentication required for ${request.url}.`);
-                recordProxyFailure();
-            }
+                // Rule 3: Proxy auth failure
+                else if (status === 407) {
+                    reqLog.warning(`[${domain}] Proxy authentication required for ${request.url}.`);
+                    recordProxyFailure();
+                }
 
-            // Rule 4: Empty / malformed response
-            else if (!status || status >= 500) {
-                reqLog.error(
-                    `[${domain}] Request permanently failed ` +
-                    `(HTTP ${status ?? 'timeout/network'}): ${request.url}`
-                );
-            }
+                // Rule 4: Empty / malformed response
+                else if (!status || status >= 500) {
+                    reqLog.error(
+                        `[${domain}] Request permanently failed ` +
+                        `(HTTP ${status ?? 'timeout/network'}): ${request.url}`
+                    );
+                }
 
-            else {
-                reqLog.warning(`[${domain}] Unexpected status ${status}: ${request.url}`);
+                else {
+                    reqLog.warning(`[${domain}] Unexpected status ${status}: ${request.url}`);
+                }
+            } finally {
+                await releaseDomainSlotIfAcquired(request);
             }
         },
     });
