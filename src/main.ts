@@ -476,8 +476,6 @@ const maxConcurrency = hasPaidProxy
                     if (session) session.markBad();
                     recordRateLimitHit();
                     await handleViolation(domain, `HTTP 429 rate-limit`, status);
-                    // Exponential backoff: 1min × retry count (per strategy doc)
-                    await sleep(60_000 * Math.max(request.retryCount, 1));
                 }
 
                 // Rule 2: Hard block (403 Forbidden)
