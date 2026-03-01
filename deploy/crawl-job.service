@@ -1,0 +1,120 @@
+[Unit]
+# ─── Human-readable name and description ──────────────────────────────────────
+Description=Crawl-Job — Crawlee v3 automated job board scraper
+Documentation=file:///opt/crawl-job/README.md
+
+# ─── Ordering dependencies ────────────────────────────────────────────────────
+# After=network-online.target ensures the network stack is FULLY up (DNS works)
+# before our process starts. "network.target" only guarantees the interface
+# exists — not that DNS resolves — which would cause proxy fetches to fail.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# ─── Identity ─────────────────────────────────────────────────────────────────
+# Run as the dedicated non-root service user for security.
+# This user has no sudo rights and cannot log in interactively.
+User=crawl-job
+Group=crawl-job
+
+# ─── Working directory ────────────────────────────────────────────────────────
+# All relative paths in the code (./storage, ./dist) resolve from here.
+WorkingDirectory=/opt/crawl-job
+
+# ─── Environment ──────────────────────────────────────────────────────────────
+# EnvironmentFile loads KEY=VALUE pairs before ExecStart runs.
+# The file is owned root:crawl-job with mode 640 — the service user can READ
+# it but other users cannot. Lines starting with # are ignored.
+EnvironmentFile=/etc/crawl-job/env
+
+# nvm writes node/npm into ~/.nvm/versions/node/... which is NOT on the system
+# PATH. We set PATH explicitly to the exact Node 20 binary directory.
+# Update the version number here when you upgrade Node.
+Environment="PATH=/home/crawl-job/.nvm/versions/node/v20.19.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Tell Node.js the max heap size. 1536 MB = 1.5 GB, leaving ~0.5–2 GB for the
+# OS and Chromium page rendering on a 2–4 GB server. Adjust to your RAM.
+# Formula: HEAP = (total RAM - 1 GB OS headroom - 400 MB per concurrent tab)
+Environment="NODE_OPTIONS=--max-old-space-size=1536"
+
+# Suppress Playwright's first-run setup messages in logs
+Environment="PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=0"
+
+# ─── Process start / stop ────────────────────────────────────────────────────
+# ExecStart runs the compiled JavaScript (not ts-node) in production.
+# "npm run start:prod" calls "node dist/main.js" (faster, less RAM than ts-node).
+# We use the absolute path to node via the nvm shim for reliability.
+ExecStart=/home/crawl-job/.nvm/versions/node/v20.19.0/bin/node dist/main.js
+
+# ExecStartPre: compile TypeScript before every start.
+# If tsc fails (type errors), the service DOES NOT start — safe gate.
+ExecStartPre=/home/crawl-job/.nvm/versions/node/v20.19.0/bin/npx tsc --noEmit
+
+# Graceful shutdown: send SIGTERM and wait up to 120 seconds before SIGKILL.
+# 120 s gives the crawler time to flush metrics, dedupStore and close browsers.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+
+# ─── Restart policy ───────────────────────────────────────────────────────────
+# Restart=on-failure: restart only when process exits with non-zero code or
+# is killed by a signal. Does NOT restart if we call `systemctl stop`.
+Restart=on-failure
+
+# RestartSec: wait 30 seconds before restarting. Prevents a tight crash loop
+# that would exhaust rate limits, hammer proxy sources, and fill logs.
+RestartSec=30s
+
+# StartLimitIntervalSec + StartLimitBurst: if the service crashes 3 times in
+# 5 minutes, systemd stops trying to restart it and marks it "failed".
+# This prevents runaway restart loops during systematic failures (bad release).
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+# ─── Resource limits ──────────────────────────────────────────────────────────
+# MemoryMax: hard ceiling. systemd OOM-kills the process at this limit.
+# Set below your server's total RAM to always leave headroom for the OS.
+# 2 GB server → 1400M | 4 GB → 3G | 8 GB → 6G
+MemoryMax=3G
+
+# MemoryHigh: soft ceiling. When RSS approaches this value, the kernel starts
+# applying memory pressure to the cgroup (reclaim cache, slow allocations).
+# Set ~200 MB below MemoryMax as an early-warning zone.
+MemoryHigh=2800M
+
+# CPUQuota: limits total CPU time. 200% = 2 full cores on a multi-core machine.
+# Headless Chromium uses ~80-100% per tab; with maxConcurrency=6 this caps
+# total browser CPU to ~2 cores, leaving other cores for the OS and npm.
+CPUQuota=200%
+
+# LimitNOFILE: file descriptor limit. Playwright opens 1 fd per browser tab,
+# socket, and storage file. 65536 is safe for up to ~100 concurrent tabs.
+LimitNOFILE=65536
+
+# LimitNPROC: max processes/threads the service user may spawn.
+# Chromium forks several helper processes per browser instance.
+LimitNPROC=512
+
+# ─── Security hardening ───────────────────────────────────────────────────────
+# NoNewPrivileges: prevents the process from gaining extra privileges via
+# setuid/setgid binaries. Chromium sandbox already requires this.
+NoNewPrivileges=true
+
+# PrivateTmp: give the service its own /tmp mount. Prevents temp-file conflicts
+# with other services and provides automatic cleanup on stop.
+PrivateTmp=true
+
+# ─── Stdout/Stderr logging ────────────────────────────────────────────────────
+# StandardOutput=journal: all console.log and log.info() go to journald.
+# StandardError=journal:  stack traces and log.error() also go to journald.
+# Use `journalctl -u crawl-job -f` to tail live.
+StandardOutput=journal
+StandardError=journal
+
+# SyslogIdentifier: the tag attached to every log line in journald.
+# Makes grepping easy: journalctl SYSLOG_IDENTIFIER=crawl-job
+SyslogIdentifier=crawl-job
+
+[Install]
+# WantedBy=multi-user.target: enable the service to start in the normal
+# multi-user runlevel (the standard runlevel for a headless server).
+WantedBy=multi-user.target

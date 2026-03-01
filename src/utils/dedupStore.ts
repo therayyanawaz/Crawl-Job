@@ -41,7 +41,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { log } from 'crawlee';
-import type { JobFingerprints } from './fingerprint';
+import type { JobFingerprints } from './fingerprint.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

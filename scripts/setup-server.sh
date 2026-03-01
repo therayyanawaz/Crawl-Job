@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# Job Crawler — Full Server Setup Script
+# Crawl-Job — Full Server Setup Script
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# This script installs EVERY dependency required to run the job-crawler project
+# This script installs EVERY dependency required to run the crawl-job project
 # on a fresh Ubuntu 22.04/24.04 server. Run it once after cloning the repo.
 #
 # Usage:
@@ -151,7 +151,7 @@ systemctl start postgresql
 systemctl enable postgresql
 
 # Load credentials from .env if it exists, otherwise use defaults
-DB_NAME="job_crawler"
+DB_NAME="crawl_job"
 DB_USER="testrayyan1"
 DB_PASS="t24P4cu>\$I£\""
 
@@ -274,7 +274,7 @@ ENV_FILE="${PROJECT_DIR}/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
     info "Creating default .env file..."
     cat > "$ENV_FILE" << 'ENVEOF'
-# ─── Job Crawler Configuration ────────────────────────────────────────────────
+# ─── Crawl-Job Configuration ────────────────────────────────────────────────
 # Uncomment and modify as needed.
 
 # Logging level: DEBUG, INFO, WARNING, ERROR
@@ -317,11 +317,11 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════════
 step 9 "Setting up systemd service (optional)"
 
-SERVICE_FILE="/etc/systemd/system/job-crawler.service"
+SERVICE_FILE="/etc/systemd/system/crawl-job.service"
 if [[ ! -f "$SERVICE_FILE" ]]; then
     cat > "$SERVICE_FILE" << SERVICEEOF
 [Unit]
-Description=Job Crawler — Playwright-based job scraper
+Description=Crawl-Job — Playwright-based job scraper
 After=network-online.target
 Wants=network-online.target
 
@@ -347,7 +347,7 @@ CPUQuota=200%
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=job-crawler
+SyslogIdentifier=crawl-job
 
 # Security hardening
 NoNewPrivileges=true
@@ -360,9 +360,9 @@ SERVICEEOF
 
     systemctl daemon-reload
     success "systemd service created at ${SERVICE_FILE}"
-    info "  Start:   sudo systemctl start job-crawler"
-    info "  Enable:  sudo systemctl enable job-crawler"
-    info "  Logs:    journalctl -u job-crawler -f"
+    info "  Start:   sudo systemctl start crawl-job"
+    info "  Enable:  sudo systemctl enable crawl-job"
+    info "  Logs:    journalctl -u crawl-job -f"
 else
     success "systemd service already exists. Skipping."
 fi
@@ -442,9 +442,9 @@ if $PASS; then
     echo -e "    npm start -- --verbose"
     echo ""
     echo -e "  ${CYAN}Run as a service:${NC}"
-    echo -e "    sudo systemctl start job-crawler"
-    echo -e "    sudo systemctl enable job-crawler    # auto-start on boot"
-    echo -e "    journalctl -u job-crawler -f          # tail logs"
+    echo -e "    sudo systemctl start crawl-job"
+    echo -e "    sudo systemctl enable crawl-job    # auto-start on boot"
+    echo -e "    journalctl -u crawl-job -f          # tail logs"
 else
     echo -e "${RED}${BOLD}  ⚠️  Some checks failed. Review the output above.${NC}"
 fi

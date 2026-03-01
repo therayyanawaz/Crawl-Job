@@ -43,7 +43,7 @@ import {
     LinkedInSelectors,
     extractLinkedInJobId,
     buildLinkedInDetailUrl,
-} from '../config/linkedin';
+} from '../config/linkedin.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

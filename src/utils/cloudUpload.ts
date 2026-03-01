@@ -25,10 +25,10 @@
  *
  * USAGE
  * ──────
- *   import { uploadArchive, uploadAllPendingArchives } from './utils/cloudUpload';
+ *   import { uploadArchive, uploadAllPendingArchives } from './utils/cloudUpload.js';
  *
  *   // Upload one file:
- *   await uploadArchive('/opt/job-crawler/storage/archives/2026/02/2026-02-14_jobs_001-010.tar.gz');
+ *   await uploadArchive('/opt/crawl-job/storage/archives/2026/02/2026-02-14_jobs_001-010.tar.gz');
  *
  *   // Upload everything not yet uploaded:
  *   await uploadAllPendingArchives();
@@ -40,7 +40,7 @@ import * as https from 'https';
 import * as http from 'http';
 import * as crypto from 'crypto';
 import { log } from 'crawlee';
-import type { ArchiveManifest } from './archive';
+import type { ArchiveManifest } from './archive.js';
 import 'dotenv/config';
 
 // ─── Config ───────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 /**
  * src/main.ts
  *
- * ENTRY POINT — Job Crawler with Tiered Strategy
+ * ENTRY POINT — Crawl-Job with Tiered Strategy
  *
  * PROXY-AWARE STRATEGY
  * ─────────────────────
@@ -17,53 +17,64 @@
  *
  * DATABASE
  * ────────
- *  • All data is inserted into the `attack` database via PostgreSQL.
+ *  • All data is inserted into the `crawl_job` database via PostgreSQL.
  */
 
 import { PlaywrightCrawler, ProxyConfiguration, log } from 'crawlee';
-import { router } from './routes';
-import { fetchAllFreeProxies } from './utils/freeProxyFetcher';
-import { validateProxies, revalidatePool, ValidatedProxy } from './utils/proxyValidator';
-import { initDedupStore, closeDedupStore } from './utils/dedupStore';
-import { logDedupSummary } from './utils/dedup';
+import { router } from './routes.js';
+import { fetchAllFreeProxies } from './utils/freeProxyFetcher.js';
+import { validateProxies, revalidatePool, ValidatedProxy } from './utils/proxyValidator.js';
+import { initDedupStore, closeDedupStore } from './utils/dedupStore.js';
+import { logDedupSummary } from './utils/dedup.js';
 import {
     initMetrics, closeMetrics, logMetricsSummary,
     recordRequestStarted, recordRequestSuccess, recordRequestFailed,
     recordRateLimitHit, recordProxyFailure,
-} from './utils/metrics';
-import { logHealthReport, writeHealthReport } from './utils/healthCheck';
-import { sendAlert, alertOnHealthReport, sendStartupAlert, sendCompletionAlert } from './utils/alerts';
+} from './utils/metrics.js';
+import { logHealthReport, writeHealthReport } from './utils/healthCheck.js';
+import { sendAlert, alertOnHealthReport, sendStartupAlert, sendCompletionAlert } from './utils/alerts.js';
 import {
     init as initDomainQueue,
     canProceed,
     recordRequest,
     releaseRequest,
     cleanup as cleanupDomainQueue,
-} from './utils/domainQueue';
+} from './utils/domainQueue.js';
 import {
     getRateLimitConfig,
     getDelayForDomain,
     extractDomain,
     isOffHoursIST,
-} from './config/rateLimits';
+} from './config/rateLimits.js';
 import {
     detectRateLimitByStatus,
     isBlocked,
     handleViolation,
     recordSuccess,
-} from './utils/rateLimitHandler';
+} from './utils/rateLimitHandler.js';
 import {
     printCurrentStatus,
     printViolationHistory,
     printRecommendations,
     exportReport,
-} from './utils/rateLimitMonitor';
-import { pingDb, closeDb } from './utils/db';
-import { countJobsInDb } from './utils/jobStore';
-import { runOrchestrator } from './orchestrator';
-import { initFileLogger, closeFileLogger } from './utils/fileLogger';
-import type { SearchQuery } from './sources/types';
+} from './utils/rateLimitMonitor.js';
+import { pingDb, closeDb } from './utils/db.js';
+import { countJobsInDb, saveJobToDb } from './utils/jobStore.js';
+import type { StorableJob } from './utils/jobStore.js';
+import { runOrchestrator } from './orchestrator.js';
+import { initFileLogger, closeFileLogger, initJsonLogger, closeJsonLogger, logStructured } from './utils/fileLogger.js';
+import { createRunContext } from './utils/runContext.js';
+import { isDuplicateJob, markJobAsStored } from './utils/dedup.js';
+import type { SearchQuery, RawJobListing } from './sources/types.js';
+import { fetchHimalayasRss } from './sources/himalayasRss.js';
+import { checkOllamaHealth, setOllamaAvailable, isOllamaAvailable } from './services/ollamaExtractor.js';
+import { detectPaidProxy } from './utils/proxyUtils.js';
 import 'dotenv/config';
+import { env } from './config/env.js';
+
+// ─── Global tracker: how many jobs came from APIs (for health check) ──────────
+let apiJobsCount = 0;
+export function getApiJobsCount(): number { return apiJobsCount; }
 
 // ─── File Logger (MUST be first — truncates log.txt) ──────────────────────────
 initFileLogger();
@@ -71,60 +82,28 @@ initFileLogger();
 // ─── Logging ──────────────────────────────────────────────────────────────────
 const isVerbose = process.argv.includes('--verbose') || process.argv.includes('-v');
 if (isVerbose) {
-    process.env.CRAWLEE_LOG_LEVEL = 'DEBUG';
+    env.CRAWLEE_LOG_LEVEL = 'DEBUG';
 }
 
 log.setLevel(
-    process.env.CRAWLEE_LOG_LEVEL
-        ? (log.LEVELS as any)[process.env.CRAWLEE_LOG_LEVEL.toUpperCase()] ?? log.LEVELS.INFO
+    env.CRAWLEE_LOG_LEVEL
+        ? (log.LEVELS as any)[env.CRAWLEE_LOG_LEVEL.toUpperCase()] ?? log.LEVELS.INFO
         : log.LEVELS.INFO
 );
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const PROXY_MIN_COUNT = Number(process.env.PROXY_MIN_COUNT ?? 5);
-const PROXY_REFRESH_INTERVAL_MS = Number(process.env.PROXY_REFRESH_INTERVAL_MINUTES ?? 15) * 60_000;
-const ENABLE_RATE_LIMITING = process.env.ENABLE_DOMAIN_RATE_LIMITING !== 'false';
+const PROXY_MIN_COUNT = env.PROXY_MIN_COUNT;
+const PROXY_REFRESH_INTERVAL_MS = env.PROXY_REFRESH_INTERVAL_MINUTES * 60_000;
+const ENABLE_RATE_LIMITING = env.ENABLE_DOMAIN_RATE_LIMITING;
 
 const STATUS_REPORT_INTERVAL_MS = 10 * 60_000;
-const HEALTH_CHECK_INTERVAL_MS = Number(process.env.HEALTH_CHECK_INTERVAL_MS ?? 5 * 60_000);
-
-// ─── Paid Proxy Detection ─────────────────────────────────────────────────────
-
-/**
- * Heuristic to detect if the configured PROXY_URLS contain paid/residential
- * proxies (like Webshare, Oxylabs, BrightData, SmartProxy).
- *
- * Paid proxies:  → enable aggressive headless scraping (safe from bans)
- * Free proxies:  → conservative HTTP-only mode to avoid burning IPs
- */
-function detectPaidProxy(): boolean {
-    const raw = process.env.PROXY_URLS ?? '';
-    if (!raw) return false;
-
-    const paidIndicators = [
-        'webshare.io',
-        'oxylabs.',
-        'brightdata.',
-        'smartproxy.',
-        'zyte.com',
-        'storm-',
-        'residential',
-        '-rotate',
-        'superproxy.',
-        'iproyal.',
-        'proxy-seller.',
-        'proxy.google',
-    ];
-
-    const lower = raw.toLowerCase();
-    return paidIndicators.some(ind => lower.includes(ind));
-}
+const HEALTH_CHECK_INTERVAL_MS = env.HEALTH_CHECK_INTERVAL_MS;
 
 // ─── Search Queries ───────────────────────────────────────────────────────────
 
 function getSearchQueries(): SearchQuery[] {
-    const queriesEnv = process.env.SEARCH_QUERIES;
+    const queriesEnv = env.SEARCH_QUERIES;
     if (queriesEnv) {
         try {
             return JSON.parse(queriesEnv);
@@ -171,7 +150,7 @@ async function buildProxyPool(): Promise<ValidatedProxy[]> {
         realIp,
     };
 
-    const manualRaw = (process.env.PROXY_URLS ?? '')
+    const manualRaw = (env.PROXY_URLS ?? '')
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
@@ -184,7 +163,7 @@ async function buildProxyPool(): Promise<ValidatedProxy[]> {
             const parsed = new URL(url);
             return {
                 host: parsed.hostname,
-                port: Number(parsed.port),
+                port: parsed.port ? Number(parsed.port) : (parsed.protocol === 'https:' ? 443 : 80),
                 protocol: parsed.protocol.replace(':', '') as any,
                 source: 'manual',
                 username: parsed.username ? decodeURIComponent(parsed.username) : undefined,
@@ -219,29 +198,37 @@ async function buildProxyPool(): Promise<ValidatedProxy[]> {
     return validPool;
 }
 
-// ─── Headless Crawler (Tier 4) ────────────────────────────────────────────────
+// ─── Headless Crawler (Tier 2) ────────────────────────────────────────────────
 
 /**
- * Runs the Playwright-based headless crawler for Indeed + LinkedIn.
+ * Runs the Playwright-based headless crawler.
+ *
+ * PRIMARY TARGETS: Cutshort, Foundit, Shine, TimesJobs, Wellfound (always active)
+ * OPTIONAL:        Indeed, LinkedIn (env-gated: ENABLE_INDEED / ENABLE_LINKEDIN)
  *
  * STEALTH AUTOMATION FEATURES:
- *  • Browser fingerprint randomisation (useFingerprints: true)
- *  • Resource blocking (images, fonts, stylesheets) for paid proxies — reduces
- *    bandwidth fingerprint and speeds up page loads
- *  • Random viewport sizes to avoid fingerprint correlation
- *  • Human-like delays in pre-navigation hooks
- *  • Session retirement on 403/429 responses
+ *  • Browser fingerprint randomisation
+ *  • Resource blocking (analytics, tracking always; images/fonts for paid proxies)
+ *  • Random viewport sizes
+ *  • Cookie domain isolation (fixes SessionPool contamination)
+ *  • Human-like delays
+ *  • Session retirement on 403/429
  *  • Domain-specific concurrency and rate limits
- *
- * @param validPool   The validated proxy URLs
- * @param hasPaidProxy Whether to use aggressive (paid) or conservative (free) mode
  */
 async function runHeadlessCrawler(
     validPool: ValidatedProxy[],
     hasPaidProxy: boolean
 ): Promise<void> {
     log.info('\n' + '═'.repeat(60));
-    log.info(`  TIER 4: HEADLESS BROWSER (Indeed + LinkedIn)`);
+    log.info(`  TIER 2: HEADLESS BROWSER SCRAPING`);
+    log.info(`  Targets: Cutshort ✓ | Foundit ✓ | Shine ✓ | TimesJobs ✓ | Wellfound ✓`);
+    const enableIndeed = env.ENABLE_INDEED;
+    const enableLinkedin = env.ENABLE_LINKEDIN;
+    if (enableIndeed) log.info(`  Indeed: ENABLED (ENABLE_INDEED=true)`);
+    if (enableLinkedin) log.info(`  LinkedIn: ENABLED (ENABLE_LINKEDIN=true)`);
+    if (enableLinkedin && !env.LINKEDIN_COOKIE) {
+        log.warning(`  WARN: LinkedIn crawl enabled but no LINKEDIN_COOKIE env var set — will return 0 cards`);
+    }
     log.info(`  Mode: ${hasPaidProxy ? 'AGGRESSIVE (paid proxy — resource blocking ON)' : 'CONSERVATIVE (free proxy — stealth mode)'}`);
     log.info('═'.repeat(60) + '\n');
 
@@ -284,8 +271,8 @@ async function runHeadlessCrawler(
     // ── Concurrency strategy ──────────────────────────────────────────────────
     // Paid proxy → up to 5 concurrent pages (fast, distributed IPs)
     // Free proxy → max 2 (avoid burning cheap IPs)
-    const maxConcurrency = hasPaidProxy
-        ? Math.min(Number(process.env.HEADLESS_MAX_CONCURRENCY ?? 5), validPool.length)
+const maxConcurrency = hasPaidProxy
+        ? Math.min(env.HEADLESS_MAX_CONCURRENCY, validPool.length)
         : Math.min(2, validPool.length);
 
     // ── Random viewport pool (anti-fingerprint) ───────────────────────────────
@@ -333,8 +320,31 @@ async function runHeadlessCrawler(
 
         // ── Pre-Navigation Hook ───────────────────────────────────────────────
         preNavigationHooks: [
-            async ({ request, log: hookLog, page }, gotoOptions) => {
+            async ({ request, log: hookLog, page, session }, gotoOptions) => {
                 recordRequestStarted();
+
+                // ── PART 3 FIX: Cookie domain isolation ──────────────────────────
+                // Prevent SessionPool from leaking cross-domain cookies
+                // (e.g. Indeed cookies going to LinkedIn requests)
+                try {
+                    const requestHost = new URL(request.url).hostname;
+                    const cookies = await page.context().cookies();
+                    const foreignCookies = cookies.filter(
+                        c => c.domain && !requestHost.endsWith(c.domain.replace(/^\./, ''))
+                    );
+                    if (foreignCookies.length > 0) {
+                        hookLog.debug(`[CookieFix] Clearing ${foreignCookies.length} cross-domain cookies for ${requestHost}`);
+                        await page.context().clearCookies();
+                        const validCookies = cookies.filter(
+                            c => !c.domain || requestHost.endsWith(c.domain.replace(/^\./, ''))
+                        );
+                        if (validCookies.length > 0) {
+                            await page.context().addCookies(validCookies);
+                        }
+                    }
+                } catch {
+                    // Cookie isolation is best-effort — don't crash the request
+                }
 
                 // Anti-detection: randomise viewport per page
                 const vp = viewports[Math.floor(Math.random() * viewports.length)];
@@ -343,11 +353,9 @@ async function runHeadlessCrawler(
                 // Anti-detection: override navigator.webdriver
                 await page.addInitScript(() => {
                     Object.defineProperty(navigator, 'webdriver', { get: () => false });
-                    // Fake plugins array
                     Object.defineProperty(navigator, 'plugins', {
                         get: () => [1, 2, 3, 4, 5],
                     });
-                    // Fake languages
                     Object.defineProperty(navigator, 'languages', {
                         get: () => ['en-US', 'en'],
                     });
@@ -494,15 +502,42 @@ async function runHeadlessCrawler(
         },
     });
 
-    // ── Seed headless URLs — Indeed + LinkedIn ─────────────────────────────────
-    const seedUrls = [
-        { url: 'https://in.indeed.com/jobs?q=software+developer+fresher&l=India&sort=date', label: 'INDEED_HUB' },
-        { url: 'https://in.indeed.com/jobs?q=software+engineer+intern&l=India&sort=date', label: 'INDEED_HUB' },
-        { url: 'https://www.linkedin.com/jobs/search/?keywords=software+developer+fresher&location=India&sortBy=DD', label: 'LINKEDIN_HUB' },
-        { url: 'https://www.linkedin.com/jobs/search/?keywords=software+engineer+intern&location=India&sortBy=DD', label: 'LINKEDIN_HUB' },
+    // ── Seed headless URLs — PRIMARY targets: Cutshort, Foundit, Shine, TimesJobs, Wellfound ─────────
+    const seedUrls: Array<{ url: string; label: string }> = [
+        // Cutshort.io
+        { url: 'https://cutshort.io/jobs?keywords=software+developer&experience=0-1', label: 'CUTSHORT_HUB' },
+        { url: 'https://cutshort.io/jobs?keywords=software+engineer+intern&experience=0-1', label: 'CUTSHORT_HUB' },
+        // Foundit.in (ex-Monster India)
+        { url: 'https://www.foundit.in/srp/results?query=software+developer+fresher&location=India', label: 'FOUNDIT_HUB' },
+        { url: 'https://www.foundit.in/srp/results?query=software+engineer+intern&location=India', label: 'FOUNDIT_HUB' },
+        // Shine.com
+        { url: 'https://www.shine.com/job-search/fresher-software-developer-jobs/?q=software+developer&experience=0', label: 'SHINE_HUB' },
+        { url: 'https://www.shine.com/job-search/software-engineer-intern-jobs/?q=software+engineer+intern&experience=0', label: 'SHINE_HUB' },
+        // TimesJobs
+        { url: 'https://www.timesjobs.com/candidate/job-search.html?searchType=personalizedSearch&from=submit&txtKeywords=software+developer&txtLocation=&sequence=1&startPage=1', label: 'TIMESJOBS_HUB' },
+        { url: 'https://www.timesjobs.com/candidate/job-search.html?searchType=personalizedSearch&from=submit&txtKeywords=software+engineer+intern&txtLocation=&sequence=1&startPage=1', label: 'TIMESJOBS_HUB' },
+        // Wellfound
+        { url: 'https://wellfound.com/jobs', label: 'WELLFOUND_HUB' },
     ];
 
-    log.info(`[Headless] Seeding ${seedUrls.length} start URLs for Indeed + LinkedIn`);
+    // ── OPTIONAL targets (env-gated) ──────────────────────────────────────────
+    if (enableIndeed) {
+        seedUrls.push(
+            { url: 'https://in.indeed.com/jobs?q=software+developer+fresher&l=India&sort=date', label: 'INDEED_HUB' },
+            { url: 'https://in.indeed.com/jobs?q=software+engineer+intern&l=India&sort=date', label: 'INDEED_HUB' },
+        );
+    }
+    if (enableLinkedin) {
+        seedUrls.push(
+            { url: 'https://www.linkedin.com/jobs/search/?keywords=software+developer+fresher&location=India&sortBy=DD', label: 'LINKEDIN_HUB' },
+            { url: 'https://www.linkedin.com/jobs/search/?keywords=software+engineer+intern&location=India&sortBy=DD', label: 'LINKEDIN_HUB' },
+        );
+    }
+
+    const activeTargets = ['Cutshort', 'Foundit', 'Shine', 'TimesJobs', 'Wellfound'];
+    if (enableIndeed) activeTargets.push('Indeed');
+    if (enableLinkedin) activeTargets.push('LinkedIn');
+    log.info(`[Headless] Seeding ${seedUrls.length} start URLs for: ${activeTargets.join(', ')}`);
     await crawler.addRequests(seedUrls);
 
     try {
@@ -517,56 +552,172 @@ async function runHeadlessCrawler(
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function runCrawler() {
+    const ctx = createRunContext();
+    initJsonLogger(ctx.runId);
+    const enableIndeed = env.ENABLE_INDEED;
+    const enableLinkedin = env.ENABLE_LINKEDIN;
+
     log.info('╔══════════════════════════════════════════════════════════════╗');
-    log.info('║  Job Crawler — Full Tiered Strategy, Proxy-Rotated, Dedup  ║');
+    log.info('║  Crawl-Job — Multi-Platform, API-First, Tiered Strategy  ║');
     log.info('╚══════════════════════════════════════════════════════════════╝');
+
+    // Part 5: Active sources status line
+    const srcStatus = [
+        'HimalayasRSS✓',
+        'Cutshort✓', 'Foundit✓', 'Shine✓', 'TimesJobs✓', 'Wellfound✓',
+        `LinkedIn${enableLinkedin ? '✓' : '✗'}`,
+        `Indeed${enableIndeed ? '✓' : '✗'}`,
+        'Ollama-LLM(pending)',
+    ];
+    log.info(`[Sources] Active: ${srcStatus.join(' | ')}`);
+
     log.info(`Rate limiting : ${ENABLE_RATE_LIMITING ? 'ENABLED ✓' : 'DISABLED ⚠'}`);
     log.info(`IST off-hours : ${isOffHoursIST() ? 'YES — optimal crawl window' : 'NO — delays doubled for HIGH-risk domains'}`);
-    log.info(`Database      : ${process.env.PGDATABASE ?? 'attack'}`);
+    log.info(`Database      : ${env.PGDATABASE}`);
     log.info(`Log file      : log.txt (truncated for this run)`);
 
-    // Detect proxy type
     const hasPaidProxy = detectPaidProxy();
     log.info(`Proxy mode    : ${hasPaidProxy ? 'PAID ✓ (Headless always enabled)' : 'FREE/UNKNOWN (Headless conditional)'}`);
+    log.info(`Ollama LLM    : checking at startup… (${env.OLLAMA_BASE_URL})`);
+
+    // ── Termination Handling ──────────────────────────────────────────────────
+    let isShuttingDown = false;
+    const shutdown = async (signal: string) => {
+        if (isShuttingDown) return;
+        isShuttingDown = true;
+        log.info(`\n[Main] 🛑 Received ${signal}. Shutting down gracefully...`);
+
+        try {
+            cleanupDomainQueue();
+            logDedupSummary();
+            closeDedupStore();
+            closeMetrics();
+            await closeDb();
+            log.info('[Main] Cleanup complete. Exiting.');
+        } catch (err) {
+            console.error('[Main] Cleanup failed during shutdown:', err);
+        }
+        logStructured('info', 'Shutdown initiated', {
+            service: 'main',
+            event: 'shutdown',
+            signal,
+        });
+        closeJsonLogger();
+        closeFileLogger();
+        process.exit(0);
+    };
+
+    process.on('SIGINT', () => shutdown('SIGINT (Ctrl+C)'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+    // Optional: terminate with 'q' key if running in a TTY
+    if (process.stdin.isTTY) {
+        process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.setEncoding('utf-8');
+        process.stdin.on('data', (key: string) => {
+            if (key === 'q' || key === 'Q') {
+                shutdown('manual trigger (q key)');
+            }
+            // Preserve Ctrl+C functionality in raw mode
+            if (key === '\u0003') {
+                shutdown('SIGINT (Ctrl+C)');
+            }
+        });
+        log.info('[Main] Press "q" to stop the crawler gracefully.');
+    }
 
     // 0. Initialise subsystems
     initMetrics();
     initDomainQueue();
-
-    // 1. Initialise persistent dedup store
     initDedupStore();
 
-    // 2. Verify PostgreSQL connectivity
-    log.info('[DB] Checking PostgreSQL connection to "attack" database…');
+    // 0b. Ollama health check — set OLLAMA_AVAILABLE flag
+    log.info('[Ollama] Checking Ollama availability…');
+    const ollamaHealthy = await checkOllamaHealth();
+    setOllamaAvailable(ollamaHealthy);
+    if (ollamaHealthy) {
+        log.info('[Ollama] ✅ LLM extraction ENABLED — Ollama will process page HTML');
+    } else {
+        log.warning('[Ollama] ⚠ Ollama not available — falling back to CSS selector extraction');
+        log.warning('[Ollama]   To enable: ollama serve && ollama pull ' + env.OLLAMA_MODEL);
+    }
+    logStructured('info', 'Ollama health check', {
+        service: 'ollama',
+        status: ollamaHealthy ? 'ok' : 'unavailable',
+    });
+
+    // 1. Verify PostgreSQL connectivity
+    log.info('[DB] Checking PostgreSQL connection to "crawl_job" database…');
     const dbAlive = await pingDb();
     if (dbAlive) {
         const total = await countJobsInDb();
-        log.info(`[DB] ✓ Connected to "attack". ${total >= 0 ? total + ' jobs in store.' : ''}`);
+        log.info(`[DB] ✓ Connected to "crawl_job". ${total >= 0 ? total + ' jobs in store.' : ''}`);
     } else {
-        log.warning('[DB] ⚠ PostgreSQL unreachable — jobs will only be saved to local JSON. Check PGHOST/PGUSER/PGPASSWORD/PGDATABASE in .env');
+        log.warning('[DB] ⚠ PostgreSQL unreachable — jobs will only be saved to local JSON.');
     }
+    logStructured('info', 'Database connectivity', {
+        service: 'db',
+        status: dbAlive ? 'ok' : 'unreachable',
+    });
 
-    // 3. Build proxy pool
+    // ── PART 1: Run FREE API sources FIRST (no Playwright needed) ─────────────
+    const queries = getSearchQueries();
+    log.info(`\n${'─'.repeat(60)}`);
+    log.info('  TIER 0 (PRE): Free API/RSS Sources — HimalayasRSS');
+    log.info(`${'─'.repeat(60)}`);
+
+    const apiResults = await Promise.allSettled([
+        fetchHimalayasRss(queries[0]),
+    ]);
+
+    // Persist API results through dedup pipeline (skip DomainQueue as specified)
+    for (const result of apiResults) {
+        if (result.status === 'fulfilled' && result.value) {
+            const sr = result.value;
+            for (const job of sr.jobs) {
+                const record: any = { ...job, scrapedAt: new Date().toISOString() };
+                const { isDuplicate } = await isDuplicateJob(record);
+                if (!isDuplicate) {
+                    void markJobAsStored(record);
+                    saveJobToDb(record as StorableJob).catch(() => null);
+                    apiJobsCount++;
+                }
+            }
+            log.info(`[API] ${sr.source}: ${sr.jobs.length} jobs fetched, ${sr.error ? 'ERROR: ' + sr.error : 'OK'}`);
+        }
+    }
+    log.info(`[API] Total API jobs stored: ${apiJobsCount}`);
+
+    // 2. Build proxy pool
     const validPool = await buildProxyPool();
+    logStructured('info', 'Proxy pool ready', {
+        service: 'proxy',
+        poolSize: validPool.length,
+    });
     await sendStartupAlert(validPool.length);
 
-    // 4. Get search queries
-    const queries = getSearchQueries();
     log.info(`Search queries: ${queries.map(q => `"${q.keywords}"`).join(', ')}`);
 
-    // 5. Run the tiered orchestrator (Tiers 1-3)
+    // 3. Run the tiered orchestrator (Google SERP, JSearch, RSS/HTTP sources)
     const runStart = Date.now();
     const orchestratorResult = await runOrchestrator(queries, hasPaidProxy);
+    const orchestratorDuration = Date.now() - runStart;
+    logStructured('info', 'Orchestrator completed', {
+        service: 'orchestrator',
+        headlessNeeded: orchestratorResult.headlessNeeded,
+        durationMs: orchestratorDuration,
+    });
 
-    // 6. If orchestrator says headless is needed, run Tier 4
+    // 4. Run headless Playwright (Cutshort, Foundit, Shine, TimesJobs, Wellfound + optional Indeed/LinkedIn)
     if (orchestratorResult.headlessNeeded) {
         log.info('\n' + '═'.repeat(60));
-        log.info('  ACTIVATING TIER 4: HEADLESS BROWSER SCRAPING');
-        log.info('  Indeed + LinkedIn via Playwright with stealth automation');
+        log.info('  ACTIVATING TIER 2: HEADLESS BROWSER SCRAPING');
+        log.info('  Cutshort + Foundit + Shine + TimesJobs + Wellfound via Playwright');
         log.info('═'.repeat(60));
         await runHeadlessCrawler(validPool, hasPaidProxy);
     } else {
-        log.info('[Main] ✓ Sufficient data collected from Tiers 1-3. Headless skipped.');
+        log.info('[Main] ✓ Sufficient data collected. Headless skipped.');
     }
 
     // 7. Cleanup
@@ -602,6 +753,7 @@ async function runCrawler() {
 
 runCrawler().catch((err) => {
     console.error('[FATAL]', err);
+    closeJsonLogger();
     closeFileLogger();
     process.exit(1);
 });

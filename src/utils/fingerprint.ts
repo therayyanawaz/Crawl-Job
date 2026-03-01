@@ -213,8 +213,8 @@ function sha256Short(input: string): string {
  * @returns    All fingerprint hashes plus the normalised strings for debugging.
  */
 export function getJobFingerprints(job: FingerprintableJob): JobFingerprints {
-    const normTitle = normalizeTitle(job.title);
-    const normCompany = normalizeCompany(job.company);
+    const normTitle = job.title ? normalizeTitle(job.title) : '';
+    const normCompany = job.company ? normalizeCompany(job.company) : '';
     const normLoc = job.location ? normalizeLocation(job.location) : '';
     const normDesc = normalizeDescription(job.description ?? '');
     const normUrl = canonicalUrl(job.url);
@@ -225,7 +225,11 @@ export function getJobFingerprints(job: FingerprintableJob): JobFingerprints {
     // Content hash: title + company + location (cross-board dedup key)
     // Location is included to distinguish "Software Engineer @ Google Bangalore"
     // from "Software Engineer @ Google New York" when both appear in Indian boards.
-    const contentHash = sha256Short(`${normTitle}|${normCompany}|${normLoc}`);
+    const safeUrl = job.url ? canonicalUrl(job.url) : '';
+    const dedupInput = safeUrl
+        ? `${safeUrl}::${normTitle}`
+        : `${job.url ?? ''}::${job.title ?? ''}::${job.company ?? ''}`;
+    const contentHash = sha256Short(dedupInput);
 
     // Description hash: used as tie-breaker, not primary key
     const descHash = sha256Short(normDesc);

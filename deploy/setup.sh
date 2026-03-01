@@ -8,16 +8,16 @@
 # USAGE (from your local machine):
 #   ssh yourserver
 #   sudo apt update && sudo apt install -y git curl
-#   git clone https://github.com/youruser/job-crawler.git /opt/job-crawler
-#   cd /opt/job-crawler
+#   git clone https://github.com/youruser/crawl-job.git /opt/crawl-job
+#   cd /opt/crawl-job
 #   sudo bash deploy/setup.sh
 #
 # The script will:
 #   1. Install system packages (git, curl, build-essential, chromium-browser)
-#   2. Create the job-crawler system user
+#   2. Create the crawl-job system user
 #   3. Install nvm + Node 20 LTS for that user
 #   4. Install Playwright browser binaries
-#   5. Create /etc/job-crawler/ config directory
+#   5. Create /etc/crawl-job/ config directory
 #   6. Deploy the systemd unit file
 #   7. Enable and start the service
 #   8. Print a post-setup checklist
@@ -36,13 +36,13 @@ PROJECT_DIR="/opt/crawl-job"
 SERVICE_USER="crawl-job"
 SERVICE_GROUP="crawl-job"
 NODE_VERSION="20"   # Major version — nvm will install the latest 20.x LTS
-SERVICE_UNIT_SRC="${PROJECT_DIR}/deploy/job-crawler.service"
+SERVICE_UNIT_SRC="${PROJECT_DIR}/deploy/crawl-job.service"
 SERVICE_UNIT_DEST="/etc/systemd/system/crawl-job.service"
 ENV_DIR="/etc/crawl-job"
 ENV_FILE="${ENV_DIR}/env"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo " Job Crawler — Production Server Setup"
+echo " Crawl-Job — Production Server Setup"
 echo " $(date '+%Y-%m-%dT%H:%M:%S%z')"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
@@ -101,7 +101,7 @@ else
         --create-home \
         --home-dir "/home/$SERVICE_USER" \
         --shell /usr/sbin/nologin \
-        --comment "Job Crawler Service Account" \
+        --comment "Crawl-Job Service Account" \
         "$SERVICE_USER"
     echo "✓ User '$SERVICE_USER' created."
 fi
@@ -193,7 +193,7 @@ sudo -u "$SERVICE_USER" bash -l -c "
 # STEP 6: Production environment file
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "── Step 6: /etc/job-crawler/env"
+echo "── Step 6: /etc/crawl-job/env"
 
 mkdir -p "$ENV_DIR"
 
@@ -206,7 +206,7 @@ else
     echo "  $ENV_FILE already exists — not overwriting. Review manually."
 fi
 
-# Secure permissions — job-crawler can read, others cannot
+# Secure permissions — crawl-job can read, others cannot
 chown root:"$SERVICE_GROUP" "$ENV_FILE"
 chmod 640 "$ENV_FILE"
 echo "✓ Permissions: root:${SERVICE_GROUP} 640"
@@ -218,24 +218,24 @@ echo ""
 echo "── Step 7: systemd unit"
 
 # Patch the service file with the exact Node version discovered above
-sed "s|/home/job-crawler/.nvm/versions/node/v20.19.0/bin|${NODE_BIN}|g" \
+sed "s|/home/crawl-job/.nvm/versions/node/v20.19.0/bin|${NODE_BIN}|g" \
     "$SERVICE_UNIT_SRC" > "$SERVICE_UNIT_DEST"
 
 systemctl daemon-reload
 systemctl enable "$SERVICE_USER.service" 2>/dev/null || \
-    systemctl enable "job-crawler.service"
+    systemctl enable "crawl-job.service"
 echo "✓ Service enabled: will start on boot."
 
-# Add sudoers rule so job-crawler can restart its own service without a password.
-# This allows the deploy script to call `sudo systemctl restart job-crawler`.
-SUDOERS_FILE="/etc/sudoers.d/job-crawler"
+# Add sudoers rule so crawl-job can restart its own service without a password.
+# This allows the deploy script to call `sudo systemctl restart crawl-job`.
+SUDOERS_FILE="/etc/sudoers.d/crawl-job"
 if [[ ! -f "$SUDOERS_FILE" ]]; then
     cat > "$SUDOERS_FILE" <<EOF
-# Allow job-crawler user to manage its own systemd service
-job-crawler ALL=(root) NOPASSWD: /bin/systemctl start job-crawler
-job-crawler ALL=(root) NOPASSWD: /bin/systemctl stop job-crawler
-job-crawler ALL=(root) NOPASSWD: /bin/systemctl restart job-crawler
-job-crawler ALL=(root) NOPASSWD: /bin/systemctl status job-crawler
+# Allow crawl-job user to manage its own systemd service
+crawl-job ALL=(root) NOPASSWD: /bin/systemctl start crawl-job
+crawl-job ALL=(root) NOPASSWD: /bin/systemctl stop crawl-job
+crawl-job ALL=(root) NOPASSWD: /bin/systemctl restart crawl-job
+crawl-job ALL=(root) NOPASSWD: /bin/systemctl status crawl-job
 EOF
     chmod 440 "$SUDOERS_FILE"
     echo "✓ sudoers rule created: $SUDOERS_FILE"
@@ -247,16 +247,16 @@ fi
 echo ""
 echo "── Step 8: Starting service"
 
-systemctl start job-crawler
+systemctl start crawl-job
 sleep 8
-STATUS=$(systemctl is-active job-crawler 2>/dev/null || echo "unknown")
+STATUS=$(systemctl is-active crawl-job 2>/dev/null || echo "unknown")
 echo "  Service status: $STATUS"
 
 if [[ "$STATUS" == "active" ]]; then
     echo "✓ Service is running successfully."
 else
     echo "⚠  Service did not start cleanly. Check logs:"
-    echo "   sudo journalctl -u job-crawler -n 50 --no-pager"
+    echo "   sudo journalctl -u crawl-job -n 50 --no-pager"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -267,16 +267,16 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo " Setup Complete — Post-setup Checklist"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "  [ ] Edit alerts config:   sudo nano /etc/job-crawler/env"
+echo "  [ ] Edit alerts config:   sudo nano /etc/crawl-job/env"
 echo "  [ ] Add proxy URLs:       set PROXY_URLS= in that file"
-echo "  [ ] Tail live logs:       sudo journalctl -u job-crawler -f"
-echo "  [ ] Check health:         cat /opt/job-crawler/storage/health-report.json"
-echo "  [ ] Check metrics:        cat /opt/job-crawler/storage/metrics-snapshot.json"
+echo "  [ ] Tail live logs:       sudo journalctl -u crawl-job -f"
+echo "  [ ] Check health:         cat /opt/crawl-job/storage/health-report.json"
+echo "  [ ] Check metrics:        cat /opt/crawl-job/storage/metrics-snapshot.json"
 echo "  [ ] Test alert delivery:  (set ALERT_SLACK_WEBHOOK and restart service)"
 echo ""
 echo "  Useful commands:"
-echo "    sudo systemctl status job-crawler"
-echo "    sudo systemctl restart job-crawler"
-echo "    sudo journalctl -u job-crawler --since '1 hour ago'"
-echo "    sudo -u job-crawler bash /opt/job-crawler/deploy/deploy.sh --update"
+echo "    sudo systemctl status crawl-job"
+echo "    sudo systemctl restart crawl-job"
+echo "    sudo journalctl -u crawl-job --since '1 hour ago'"
+echo "    sudo -u crawl-job bash /opt/crawl-job/deploy/deploy.sh --update"
 echo ""

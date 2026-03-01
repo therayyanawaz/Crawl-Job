@@ -1,5 +1,5 @@
 import { PlaywrightCrawlingContext } from 'crawlee';
-import { Selectors } from '../config';
+import { Selectors } from '../config.js';
 
 export async function extractExampleBoard({ page, enqueueLinks, request, log }: PlaywrightCrawlingContext) {
     log.info(`Processing hub page: ${request.url}`);

@@ -25,18 +25,18 @@
 
 import { log, Dataset } from 'crawlee';
 import { z } from 'zod';
-import { isDuplicateJob, markJobAsStored } from './utils/dedup';
-import { saveJobToDb } from './utils/jobStore';
-import type { StorableJob } from './utils/jobStore';
+import { isDuplicateJob, markJobAsStored } from './utils/dedup.js';
+import { saveJobToDb } from './utils/jobStore.js';
+import type { StorableJob } from './utils/jobStore.js';
 
 // ── Source imports
-import { scrapeGoogleJobs } from './sources/googleSerp';
-import { fetchJSearchJobs, resetJSearchKeyRotation } from './sources/jsearchApi';
-import { fetchIndeedRss } from './sources/indeedRss';
-import { fetchInternshalaJobs } from './sources/internshalaHttp';
-import { fetchNaukriJobs } from './sources/naukriHttp';
+import { fetchSerperJobs } from './sources/serperApi.js';
+import { fetchJobicyRss } from './sources/jobicyRss.js';
+import { fetchIndeedRss } from './sources/indeedRss.js';
+import { fetchInternshalaJobs } from './sources/internshalaHttp.js';
+import { fetchNaukriJobs } from './sources/naukriHttp.js';
 
-import type { RawJobListing, SearchQuery, SourceResult, SourceTier } from './sources/types';
+import type { RawJobListing, SearchQuery, SourceResult, SourceTier } from './sources/types.js';
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -84,7 +84,7 @@ async function saveJobFromSource(raw: RawJobListing, dataset: Dataset): Promise<
         return false;
     }
 
-    const { isDuplicate, reason } = isDuplicateJob(clean);
+    const { isDuplicate, reason } = await isDuplicateJob(clean);
     if (isDuplicate) {
         log.debug(`[Orchestrator] DUPLICATE (${reason}): "${clean.title}" @ "${clean.company}"`);
         return false;
@@ -92,8 +92,8 @@ async function saveJobFromSource(raw: RawJobListing, dataset: Dataset): Promise<
 
     try {
         await dataset.pushData(clean);
-        markJobAsStored(clean);
-        // Save to PostgreSQL (`attack` database) — non-blocking
+        void markJobAsStored(clean);
+        // Save to PostgreSQL (`crawl_job` database) — non-blocking
         saveJobToDb(clean as unknown as StorableJob).catch(() => null);
         log.info(`[Orchestrator] ✓ Stored [${clean.source}]: "${clean.title}" @ "${clean.company}"`);
         return true;
@@ -173,18 +173,15 @@ export async function runOrchestrator(
     let totalValidationFailed = 0;
     const tierBreakdown: Record<string, { raw: number; stored: number }> = {};
 
-    // Reset JSearch key rotation at start of each run
-    resetJSearchKeyRotation();
-
     log.info('\n' + '█'.repeat(60));
     log.info('  JOB SCRAPING ORCHESTRATOR — TIERED EXECUTION');
     log.info('  Queries: ' + queries.map(q => `"${q.keywords}"`).join(', '));
     log.info('  Proxy:   ' + (hasPaidProxy ? 'PAID ✓ (Headless enabled)' : 'FREE/UNKNOWN (Headless conditional)'));
     log.info('█'.repeat(60));
 
-    // ── TIER 1: Google Jobs SERP (PRIMARY — always runs) ──────────────────────
-    const tier1Fetchers = queries.map(q => () => scrapeGoogleJobs(q));
-    const tier1 = await runTier('Google Jobs SERP', 'TIER_0', tier1Fetchers);
+    // ── TIER 1: Serper API (PRIMARY — always runs) ──────────────────────
+    const tier1Fetchers = queries.map(q => () => fetchSerperJobs(q));
+    const tier1 = await runTier('Serper.dev API', 'TIER_0', tier1Fetchers);
 
     let tier1stored = 0;
     for (const result of tier1.results) {
@@ -194,11 +191,11 @@ export async function runOrchestrator(
             else totalDuplicatesSkipped++;
         }
     }
-    tierBreakdown['google_serp'] = { raw: tier1.totalJobs, stored: tier1stored };
+    tierBreakdown['serper_api'] = { raw: tier1.totalJobs, stored: tier1stored };
 
-    // ── TIER 2: JSearch API (SECONDARY — always runs as supplement) ────────────
-    const tier2Fetchers = queries.map(q => () => fetchJSearchJobs(q));
-    const tier2 = await runTier('JSearch API', 'TIER_0', tier2Fetchers);
+    // ── TIER 2: Jobicy RSS (SECONDARY — always runs as supplement) ────────────
+    const tier2Fetchers = queries.map(q => () => fetchJobicyRss(q));
+    const tier2 = await runTier('Jobicy RSS', 'TIER_0', tier2Fetchers);
 
     let tier2stored = 0;
     for (const result of tier2.results) {
@@ -208,7 +205,7 @@ export async function runOrchestrator(
             else totalDuplicatesSkipped++;
         }
     }
-    tierBreakdown['jsearch'] = { raw: tier2.totalJobs, stored: tier2stored };
+    tierBreakdown['jobicy_rss'] = { raw: tier2.totalJobs, stored: tier2stored };
 
     // ── TIER 3: RSS + HTTP sources (TERTIARY — run in parallel) ───────────────
     const tier3Fetchers: Array<() => Promise<SourceResult>> = [];

@@ -38,7 +38,7 @@
  *
  * USAGE
  * ──────
- *   import { archiveOldDatasets } from './utils/archive';
+ *   import { archiveOldDatasets } from './utils/archive.js';
  *   await archiveOldDatasets(7);  // archive shards older than 7 days
  *
  * Or via CLI:

@@ -1,7 +1,7 @@
 /**
  * src/utils/jobStore.ts
  *
- * Persists a validated JobRecord to the PostgreSQL `attack` database.
+ * Persists a validated JobRecord to the PostgreSQL `crawl_job` database.
  *
  * Schema aligned with STRATEGY.md § 7 + § 8.
  *

@@ -14,9 +14,9 @@ import { log } from 'crawlee';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { getAllDomainStats, DomainStats } from './domainQueue';
-import { getViolationHistory, ViolationRecord } from './rateLimitHandler';
-import { getRateLimitConfig } from '../config/rateLimits';
+import { getAllDomainStats, DomainStats } from './domainQueue.js';
+import { getViolationHistory, ViolationRecord } from './rateLimitHandler.js';
+import { getRateLimitConfig } from '../config/rateLimits.js';
 
 // ─── ANSI Colour Helpers ──────────────────────────────────────────────────────
 // We use raw ANSI codes so there's zero extra dependency.

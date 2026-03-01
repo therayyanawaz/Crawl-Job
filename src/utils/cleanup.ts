@@ -14,7 +14,7 @@
  *
  * USAGE
  * ──────
- *   import { cleanupArchives } from './utils/cleanup';
+ *   import { cleanupArchives } from './utils/cleanup.js';
  *   await cleanupArchives(90);            // delete archives older than 90 days
  *   await cleanupArchives(90, true);      // dry-run preview only
  *
@@ -26,7 +26,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { log } from 'crawlee';
-import type { ArchiveManifest } from './archive';
+import type { ArchiveManifest } from './archive.js';
 import 'dotenv/config';
 
 // ─── Paths ────────────────────────────────────────────────────────────────────

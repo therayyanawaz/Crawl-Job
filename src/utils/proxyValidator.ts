@@ -1,7 +1,7 @@
 import { log } from 'crawlee';
 import { gotScraping } from 'got-scraping';
-import type { RawProxy } from './freeProxyFetcher';
-import { toProxyUrl } from './freeProxyFetcher';
+import type { RawProxy } from './freeProxyFetcher.js';
+import { toProxyUrl } from './freeProxyFetcher.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -110,8 +110,20 @@ export async function validateProxy(
             responseTimeMs: elapsed,
             anonymity,
         };
-    } catch {
+    } catch (err: any) {
         // Network error, DNS failure, ETIMEDOUT, ECONNREFUSED …
+        let message = err.message || 'Unknown error';
+
+        // Clean up common verbose error messages (strip long bodies/HTML)
+        if (message.includes('Proxy responded with')) {
+            message = message.split(':')[0]; // Keep only the status line (e.g. "400 Bad Request")
+        }
+
+        if (proxy.source === 'manual') {
+            log.warning(`[Validator] Manual proxy validation failed (${proxyUrl}): ${message}`);
+        } else {
+            log.debug(`[Validator] Proxy failed: ${message}`);
+        }
         return null;
     }
 }

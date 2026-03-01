@@ -1,7 +1,7 @@
 /**
  * src/utils/db.ts
  *
- * Singleton PostgreSQL connection pool for the job-crawler.
+ * Singleton PostgreSQL connection pool for the crawl-job.
  *
  * All database access in the project goes through `query()` or the exported
  * `pool` object.  The pool is lazy — it does NOT connect until the first
@@ -12,7 +12,7 @@
  *   PGPORT      – default: 5432
  *   PGUSER      – required
  *   PGPASSWORD  – required
- *   PGDATABASE  – default: job_crawler
+ *   PGDATABASE  – default: crawl_job
  *   PGSSL       – "true" to enable TLS (needed for managed DBs like Supabase, RDS)
  *
  * You can also set DATABASE_URL as a full connection string, which takes
@@ -41,7 +41,7 @@ const poolConfig: ConstructorParameters<typeof Pool>[0] = connectionString
         port: Number(process.env.PGPORT ?? 5432),
         user: process.env.PGUSER,
         password: process.env.PGPASSWORD,
-        database: process.env.PGDATABASE ?? 'attack',
+        database: process.env.PGDATABASE ?? 'crawl_job',
         ssl: process.env.PGSSL === 'true' ? { rejectUnauthorized: false } : undefined,
         max: Number(process.env.PG_POOL_MAX ?? 10),
         idleTimeoutMillis: 30_000,

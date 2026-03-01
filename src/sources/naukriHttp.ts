@@ -16,7 +16,7 @@
 
 import { log } from 'crawlee';
 import * as cheerio from 'cheerio';
-import type { RawJobListing, SearchQuery, SourceResult } from './types';
+import type { RawJobListing, SearchQuery, SourceResult } from './types.js';
 
 const SOURCE_NAME = 'naukri';
 
@@ -127,19 +127,19 @@ function parseNaukriHtml(html: string): RawJobListing[] {
     const $ = cheerio.load(html);
     const jobs: RawJobListing[] = [];
 
-    // Naukri job cards
-    $('[class*="jobTuple"], [class*="srp-jobtuple"], article[class*="jobCard"]').each((_, el) => {
+    // Naukri job cards (Expanded selectors for recent updates)
+    $('[class*="jobTuple"], [class*="srp-jobtuple"], article[class*="jobCard"], .srp-jobtuple, .jobTuple, .cust-job-tuple').each((_, el) => {
         const $card = $(el);
 
-        const title = $card.find('[class*="title"] a, [class*="designation"] a, .row1 a').first().text().trim();
-        const company = $card.find('[class*="companyInfo"] a, [class*="company"], .subTitle').first().text().trim();
-        const location = $card.find('[class*="location"], .locWdth, [class*="loc"] span').first().text().trim() || undefined;
-        const experience = $card.find('[class*="experience"], .expwdth').first().text().trim() || undefined;
-        const salary = $card.find('[class*="salary"], .salwdth').first().text().trim() || undefined;
-        const description = $card.find('[class*="job-description"], .job-desc, .ellipsis').first().text().trim();
+        const title = $card.find('[class*="title"] a, [class*="designation"] a, .row1 a, h2.title').first().text().trim();
+        const company = $card.find('[class*="companyInfo"] a, [class*="company"], .subTitle, a.comp-name').first().text().trim();
+        const location = $card.find('[class*="location"], .locWdth, [class*="loc"] span, span.locWdth').first().text().trim() || undefined;
+        const experience = $card.find('[class*="experience"], .expwdth, span.expwdth').first().text().trim() || undefined;
+        const salary = $card.find('[class*="salary"], .salwdth, span.salwdth').first().text().trim() || undefined;
+        const description = $card.find('[class*="job-description"], .job-desc, .ellipsis, [class*="job-description"]').first().text().trim();
 
         const href = $card.find('a[href*="naukri.com"]').first().attr('href') ??
-            $card.find('[class*="title"] a').first().attr('href') ?? '';
+            $card.find('[class*="title"] a, h2 a').first().attr('href') ?? '';
         const url = href.startsWith('http') ? href : `https://www.naukri.com${href}`;
 
         if (title) {
@@ -212,9 +212,12 @@ export async function fetchNaukriJobs(query: SearchQuery): Promise<SourceResult>
                     try {
                         const resp = await fetch(url, {
                             headers: {
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0',
-                                'Accept': 'text/html',
-                                'Accept-Language': 'en-IN,en;q=0.9',
+                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                                "Accept-Language": "en-IN,en;q=0.9",
+                                "Accept-Encoding": "gzip, deflate, br",
+                                "Referer": "https://www.naukri.com/",
+                                "Connection": "keep-alive"
                             },
                             signal: AbortSignal.timeout(15_000),
                         });
@@ -243,10 +246,12 @@ export async function fetchNaukriJobs(query: SearchQuery): Promise<SourceResult>
                             url,
                             proxyUrl: safeProxy,
                             headers: {
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                                'Accept-Language': 'en-IN,en;q=0.9,hi;q=0.8',
-                                'Referer': 'https://www.google.com/',
+                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                                "Accept-Language": "en-IN,en;q=0.9",
+                                "Accept-Encoding": "gzip, deflate, br",
+                                "Referer": "https://www.naukri.com/",
+                                "Connection": "keep-alive"
                             },
                             timeout: { request: 20_000 },
                             retry: { limit: 1 },

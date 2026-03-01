@@ -7,12 +7,12 @@
  *   isDuplicateJob()   → boolean check + reason
  *   markJobAsStored()  → record in store after successful pushData()
  *
- * Also owns the per-run statistics that feed into the monitoring report.
+ * Also owns the per‑run statistics that feed into the monitoring report.
  */
 
 import { log } from 'crawlee';
-import { getJobFingerprints, FingerprintableJob } from './fingerprint';
-import { checkDuplicate, markJobAsSeen, getStoreSize } from './dedupStore';
+import { getJobFingerprints, FingerprintableJob } from './fingerprint.js';
+import { checkDuplicate, markJobAsSeen, getStoreSize } from './dedupStore.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -23,7 +23,7 @@ export interface DedupResult {
     reason: DuplicateReason;
 }
 
-// In-process stats for the current crawl run
+// In‑process stats for the current crawl run
 interface RunStats {
     totalProcessed: number;
     totalSkipped: number;
@@ -42,9 +42,9 @@ const stats: RunStats = {
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
+/** Enable/disable deduplication globally (default: enabled). */
 const DEDUP_ENABLED = process.env.DEDUP_ENABLED !== 'false';
-
-/** Log a message when a duplicate is found (disable for high-volume runs). */
+/** Log a message when a duplicate is found (default: enabled). */
 const DEDUP_LOG_SKIPPED = process.env.DEDUP_LOG_SKIPPED !== 'false';
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -52,13 +52,16 @@ const DEDUP_LOG_SKIPPED = process.env.DEDUP_LOG_SKIPPED !== 'false';
 /**
  * Checks whether a given job record is a duplicate.
  *
- * Always increments `totalProcessed`.
- * If a duplicate is found, increments the appropriate skip counter.
+ * This function is **async** because the underlying dedup store (Redis)
+ * performs network I/O.
  *
- * @param job  Any object satisfying FingerprintableJob (subset of your JobRecord).
- * @returns    DedupResult — { isDuplicate, reason }
+ * Always increments `totalProcessed`. If a duplicate is found, the appropriate
+ * skip counter is incremented and an optional debug message is logged.
+ *
+ * @param job  Any object satisfying `FingerprintableJob`.
+ * @returns    Promise resolving to `DedupResult` – `{ isDuplicate, reason }`.
  */
-export function isDuplicateJob(job: FingerprintableJob): DedupResult {
+export async function isDuplicateJob(job: FingerprintableJob): Promise<DedupResult> {
     stats.totalProcessed++;
 
     if (!DEDUP_ENABLED) {
@@ -66,7 +69,7 @@ export function isDuplicateJob(job: FingerprintableJob): DedupResult {
     }
 
     const fp = getJobFingerprints(job);
-    const reason = checkDuplicate(fp);    // 'url' | 'content' | 'none'
+    const reason = await checkDuplicate(fp); // ← async Redis lookup
 
     if (reason !== 'none') {
         stats.totalSkipped++;
@@ -88,34 +91,44 @@ export function isDuplicateJob(job: FingerprintableJob): DedupResult {
 
 /**
  * Marks a job as stored in the persistent dedup store.
- * MUST be called only after pushData() has succeeded — never speculatively.
  *
- * @param job  Same object passed to isDuplicateJob().
+ * This function is **async** to await the Redis write operation.
+ *
+ * Must be called *only* after `pushData()` (or equivalent) has succeeded.
+ *
+ * @param job  Same object passed to `isDuplicateJob()`.
  */
-export function markJobAsStored(job: FingerprintableJob): void {
+export async function markJobAsStored(job: FingerprintableJob): Promise<void> {
     if (!DEDUP_ENABLED) return;
 
     const fp = getJobFingerprints(job);
-    markJobAsSeen(fp);
+    await markJobAsSeen(fp); // ← async Redis write
     stats.totalStored++;
 }
 
 /**
  * Returns a snapshot of the current run's deduplication statistics.
- * Used by the monitoring and the post-run report.
+ *
+ * The store size requires an asynchronous call to Redis.
+ *
+ * @returns Promise resolving to the statistics object plus `storeSize`.
  */
-export function getDedupStats(): Readonly<RunStats> & { storeSize: number } {
+export async function getDedupStats(): Promise<Readonly<RunStats> & { storeSize: number }> {
+    const storeSize = await getStoreSize(); // async Redis count
     return {
         ...stats,
-        storeSize: getStoreSize(),
+        storeSize,
     };
 }
 
 /**
- * Logs a formatted dedup summary — call at the end of a crawl run.
+ * Logs a formatted deduplication summary.
+ *
+ * This function is **async** because it awaits `getDedupStats()`.
+ * Call it at the end of a crawl run to emit a concise report.
  */
-export function logDedupSummary(): void {
-    const s = getDedupStats();
+export async function logDedupSummary(): Promise<void> {
+    const s = await getDedupStats();
     const dupRate = s.totalProcessed > 0
         ? Math.round((s.totalSkipped / s.totalProcessed) * 100)
         : 0;

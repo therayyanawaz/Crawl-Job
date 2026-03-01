@@ -19,7 +19,7 @@
  *
  * USAGE
  * ──────
- * import { sendAlert } from './alerts';
+ * import { sendAlert } from './alerts.js';
  * await sendAlert('critical', 'Crawler stopped producing jobs', { domain: 'linkedin.com' });
  */
 
@@ -27,7 +27,7 @@ import * as https from 'https';
 import * as http from 'http';
 import * as childProc from 'child_process';
 import { log } from 'crawlee';
-import type { HealthReport } from './healthCheck';
+import type { HealthReport } from './healthCheck.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -110,7 +110,7 @@ function formatMessage(severity: AlertSeverity, message: string, ctx: AlertConte
         .map(([k, v]) => `${k}=${v}`)
         .join(' | ');
     const ts = new Date().toISOString();
-    return `${emoji} [JOB-CRAWLER ${severity.toUpperCase()}] ${ts}\n${message}${ctxStr ? '\nContext: ' + ctxStr : ''}`;
+    return `${emoji} [CRAWL-JOB ${severity.toUpperCase()}] ${ts}\n${message}${ctxStr ? '\nContext: ' + ctxStr : ''}`;
 }
 
 // ─── Channel Senders ─────────────────────────────────────────────────────────
@@ -126,7 +126,7 @@ async function sendSlack(severity: AlertSeverity, message: string, ctx: AlertCon
     const payload = JSON.stringify({
         attachments: [{
             color,
-            title: `Job Crawler — ${severity.toUpperCase()}`,
+            title: `Crawl-Job — ${severity.toUpperCase()}`,
             text: message,
             footer: Object.entries(ctx).map(([k, v]) => `${k}: ${v}`).join(' | '),
             ts: Math.floor(Date.now() / 1000),
@@ -154,7 +154,7 @@ async function sendWebhook(severity: AlertSeverity, message: string, ctx: AlertC
         message,
         context: ctx,
         timestamp: new Date().toISOString(),
-        service: 'job-crawler',
+        service: 'crawl-job',
     });
 
     try {
@@ -173,7 +173,7 @@ async function sendEmail(severity: AlertSeverity, message: string, ctx: AlertCon
         return;
     }
 
-    const subject = `[job-crawler] ${severity.toUpperCase()} Alert`;
+    const subject = `[crawl-job] ${severity.toUpperCase()} Alert`;
     const body = formatMessage(severity, message, ctx);
 
     // Use `mail` command — available on most Linux servers (requires postfix/ssmtp/msmtp).
@@ -256,7 +256,7 @@ export async function alertOnHealthReport(report: HealthReport): Promise<void> {
  * Called once from main.ts after proxy pool is built.
  */
 export async function sendStartupAlert(proxyCount: number): Promise<void> {
-    await sendAlert('info', 'Job Crawler started successfully.', {
+    await sendAlert('info', 'Crawl-Job started successfully.', {
         proxyCount,
         pid: process.pid,
         node: process.version,
@@ -267,7 +267,7 @@ export async function sendStartupAlert(proxyCount: number): Promise<void> {
  * Sends a completion notification when the crawler finishes normally.
  */
 export async function sendCompletionAlert(jobsExtracted: number, durationSec: number): Promise<void> {
-    await sendAlert('info', 'Job Crawler run completed.', {
+    await sendAlert('info', 'Crawl-Job run completed.', {
         jobsExtracted,
         durationSec,
         pid: process.pid,

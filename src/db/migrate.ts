@@ -1,7 +1,7 @@
 /**
  * src/db/migrate.ts
  *
- * Idempotent database migration for the job-crawler.
+ * Idempotent database migration for the crawl-job.
  * Schema aligned with STRATEGY.md § 8.
  *
  * Run:  npm run db:migrate
@@ -83,10 +83,10 @@ async function migrate(): Promise<void> {
     const alive = await pingDb();
     if (!alive) {
         console.error('[migrate] ✗ Cannot reach PostgreSQL. Check PGHOST / PGUSER / PGPASSWORD / PGDATABASE in .env');
-        console.error('[migrate]   Current PGDATABASE:', process.env.PGDATABASE ?? 'attack');
+        console.error('[migrate]   Current PGDATABASE:', process.env.PGDATABASE ?? 'crawl_job');
         process.exit(1);
     }
-    console.log(`[migrate] ✓ Connected to "${process.env.PGDATABASE ?? 'attack'}".`);
+    console.log(`[migrate] ✓ Connected to "${process.env.PGDATABASE ?? 'crawl_job'}".`);
 
     console.log('[migrate] Creating jobs table…');
     await query(CREATE_JOBS_TABLE);

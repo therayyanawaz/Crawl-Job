@@ -30,10 +30,10 @@
     "db:migrate:check": "tsx -e \"import('./src/utils/db.js').then(m=>m.pingDb()).then(ok=>{ console.log(ok?'✓ DB reachable':'✗ DB unreachable'); process.exit(ok?0:1); })\" ",
     "testsprite": "npx @testsprite/testsprite-mcp@latest"
   },
-  "keywords": ["job-crawler", "crawl-job", "web-scraping", "playwright", "crawlee", "india-jobs", "typescript", "postgresql", "ollama"],
+  "keywords": ["crawl-job", "web-scraping", "playwright", "crawlee", "india-jobs", "typescript", "postgresql", "ollama"],
   "author": "Md Rayyan Nawaz <therayyanawaz@gmail.com>",
   "license": "ISC",
-  "description": "Multi-platform job crawler for the Indian job market — tiered scraping \n   with Playwright, PostgreSQL, and Ollama LLM extraction",
+  "description": "Crawl-Job: multi-platform crawler for the Indian job market — tiered scraping with Playwright, PostgreSQL, and Ollama LLM extraction",
   "dependencies": {
     "cheerio": "^1.2.0",
     "crawlee": "^3.16.0",

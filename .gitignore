@@ -1,27 +1,89 @@
+# Dependencies
 node_modules/
 
-# Compiled output
-dist/
-
-# Scraped data and runtime state
-storage/
-
-# Deploy artefacts
-deploy.log
-.backups/
-
-# Production secrets — never commit
-deploy/env.production
-.env.local
-
+# Build output and runtime state
 dist/
 storage/
-.env
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# Logs and temporary files
 log.txt
-.vscode/
-.idea/
+deploy.log
 *.log
 *.tmp
+*.temp
 tmp/
+temp/
 .cache/
+
+# Local environments and secrets
+.env
+.env.local
+.env.*.local
+.env.*.secret
+*.env
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+*.jks
+*.keystore
+deploy/env.production
+
+# Keep committed env template
+!.env.example
+
+# IDE/editor files
+.vscode/
+.idea/
+*.iml
+*.suo
+*.user
+*.swp
+*.swo
+*~
+
+# OS files
 .DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local agent/tooling metadata
+agent/
+.agent/
+.gemini/
+.gsd/
+.continue/
+
+# Backup/deploy artifacts
+.backups/
+
+# AI/ML artifacts (weights, checkpoints, logs, datasets)
+models/
+model/
+checkpoints/
+checkpoint/
+datasets/
+dataset/
+data/raw/
+data/processed/
+runs/
+wandb/
+mlruns/
+tensorboard/
+events.out.tfevents*
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.onnx
+*.h5
+*.hdf5
+*.pb
+*.tflite
+*.safetensors

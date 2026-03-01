@@ -27,15 +27,30 @@
 
 import { createPlaywrightRouter } from 'crawlee';
 import { z } from 'zod';
-import { Selectors } from './config';
-import { isDuplicateJob, markJobAsStored } from './utils/dedup';
-import { saveJobToDb } from './utils/jobStore';
-import type { StorableJob } from './utils/jobStore';
+import { Selectors } from './config.js';
+import { isDuplicateJob, markJobAsStored } from './utils/dedup.js';
+import { saveJobToDb } from './utils/jobStore.js';
+import type { StorableJob } from './utils/jobStore.js';
 
-// ── Site-specific extractors
-import { extractExampleBoard } from './extractors/exampleBoard';
-import { extractIndeedHub, extractIndeedDetail } from './extractors/indeed';
-import { extractLinkedInHub, extractLinkedInDetail } from './extractors/linkedin';
+// ── Ollama LLM extraction
+import {
+    extractJobsFromHtml,
+    filterFresherOnly,
+    normalizeJobRecord,
+    toStorableJob,
+    isOllamaAvailable,
+} from './services/ollamaExtractor.js';
+import type { OllamaJobRecord } from './services/ollamaExtractor.js';
+
+// ── Site-specific extractors (selector-based fallback)
+import { extractExampleBoard } from './extractors/exampleBoard.js';
+import { extractIndeedHub, extractIndeedDetail } from './extractors/indeed.js';
+import { extractLinkedInHub, extractLinkedInDetail } from './extractors/linkedin.js';
+import { extractCutshortHub, extractCutshortDetail } from './extractors/cutshort.js';
+import { extractFounditHub, extractFounditDetail } from './extractors/foundit.js';
+import { extractShineHub, extractShineDetail } from './extractors/shine.js';
+import { extractTimesJobsHub, extractTimesJobsDetail } from './extractors/timesjobs.js';
+import { extractWellfoundHub, extractWellfoundDetail } from './extractors/wellfound.js';
 
 export const router = createPlaywrightRouter();
 
@@ -45,7 +60,7 @@ const JobSchema = z.object({
     url: z.string().url(),
     title: z.string().min(2),
     company: z.string().default('Unknown Company'),
-    description: z.string().min(50),
+    description: z.string().min(10),  // relaxed from 50: some API sources have short descriptions
     location: z.string().optional(),
     postedDate: z.string().optional(),
     jobType: z.string().optional(),
@@ -69,7 +84,6 @@ async function saveJob(
     pushData: (data: Record<string, unknown>) => Promise<void>,
     log: PlaywrightCrawlingContext_log
 ): Promise<void> {
-    // 1. Add scrape timestamp + default sourceTier for headless
     const withTimestamp = {
         ...raw,
         scrapedAt: new Date().toISOString(),
@@ -77,7 +91,6 @@ async function saveJob(
         platform: raw.platform ?? raw.source ?? 'unknown',
     };
 
-    // 2. Zod validation
     let clean: JobRecord;
     try {
         clean = JobSchema.parse(withTimestamp);
@@ -86,18 +99,15 @@ async function saveJob(
         return;
     }
 
-    // 3. Dedup check
-    const { isDuplicate, reason } = isDuplicateJob(clean);
+    const { isDuplicate, reason } = await isDuplicateJob(clean);
     if (isDuplicate) {
         log.debug(`[Router] DUPLICATE (${reason}): "${clean.title}" @ "${clean.company}"`);
         return;
     }
 
-    // 4. Persist — write to Crawlee local store AND PostgreSQL (`attack` DB)
     try {
         await pushData(clean);
-        markJobAsStored(clean);
-        // Save to PostgreSQL (non-blocking)
+        void markJobAsStored(clean);
         saveJobToDb(clean as unknown as StorableJob).catch(() => null);
         log.info(`[Router] Stored [${clean.source ?? 'unknown'}]: "${clean.title}" @ "${clean.company}"`);
     } catch (err) {
@@ -105,7 +115,6 @@ async function saveJob(
     }
 }
 
-// TypeScript type alias for the log parameter — avoids importing a private type
 type PlaywrightCrawlingContext_log = import('crawlee').PlaywrightCrawlingContext['log'];
 
 // ─── Default Handler ──────────────────────────────────────────────────────────
@@ -138,7 +147,7 @@ router.addHandler('JOB_DETAIL', async ({ page, request, log, pushData }) => {
     );
 });
 
-// ─── Indeed ───────────────────────────────────────────────────────────────────
+// ─── Indeed (disabled by default — ENABLE_INDEED=true to activate) ────────────
 
 router.addHandler('INDEED_HUB', async (context) => {
     await extractIndeedHub(context);
@@ -150,7 +159,7 @@ router.addHandler('INDEED_DETAIL', async (context) => {
     if (data) await saveJob(data as Record<string, unknown>, pushData, log);
 });
 
-// ─── LinkedIn ─────────────────────────────────────────────────────────────────
+// ─── LinkedIn (disabled by default — ENABLE_LINKEDIN=true to activate) ────────
 
 router.addHandler('LINKEDIN_HUB', async (context) => {
     await extractLinkedInHub(context);
@@ -159,5 +168,135 @@ router.addHandler('LINKEDIN_HUB', async (context) => {
 router.addHandler('LINKEDIN_DETAIL', async (context) => {
     const { log, pushData } = context;
     const data = await extractLinkedInDetail(context);
+    if (data) await saveJob(data as Record<string, unknown>, pushData, log);
+});
+
+// ─── Ollama-powered extraction helper ─────────────────────────────────────────
+// Shared by all hub/detail handlers below. Wraps extractJobsFromHtml in
+// try/catch so Ollama failure NEVER crashes the crawl.
+
+async function ollamaExtractAndSave(
+    page: import('crawlee').PlaywrightCrawlingContext['page'],
+    request: import('crawlee').PlaywrightCrawlingContext['request'],
+    pushData: (data: Record<string, unknown>) => Promise<void>,
+    log: PlaywrightCrawlingContext_log,
+    label: string
+): Promise<boolean> {
+    if (!isOllamaAvailable()) return false;
+
+    const rawHtml = await page.innerHTML('body').catch(() => '');
+    if (!rawHtml || rawHtml.length < 100) return false;
+
+    const pageUrl = request.loadedUrl ?? request.url;
+    const source = label;
+
+    let jobs: OllamaJobRecord[] = [];
+    try {
+        jobs = await extractJobsFromHtml(rawHtml, pageUrl, source);
+        jobs = filterFresherOnly(jobs);
+        log.info(`[OllamaExtractor] ${source} → extracted ${jobs.length} fresher jobs from ${pageUrl}`);
+    } catch (err) {
+        log.error(`[OllamaExtractor] Failed for ${source}: ${(err as Error).message}`);
+        return false;  // fall back to selector-based
+    }
+
+    if (jobs.length === 0) return false;
+
+    for (const job of jobs) {
+        const normalized = normalizeJobRecord(job, source);
+        const storable = toStorableJob(normalized, pageUrl);
+        await saveJob(storable, pushData, log);
+    }
+
+    return true;  // successfully extracted via Ollama
+}
+
+// ─── Cutshort ─────────────────────────────────────────────────────────────────
+
+router.addHandler('CUTSHORT_HUB', async (context) => {
+    await extractCutshortHub(context);
+});
+
+router.addHandler('CUTSHORT_DETAIL', async (context) => {
+    const { page, request, log, pushData } = context;
+
+    // Try Ollama first
+    const ollamaOk = await ollamaExtractAndSave(page, request, pushData, log, 'CUTSHORT_DETAIL');
+    if (ollamaOk) return;
+
+    // Fallback: selector-based extraction
+    const data = await extractCutshortDetail(context);
+    if (data) await saveJob(data as Record<string, unknown>, pushData, log);
+});
+
+// ─── Foundit.in (ex-Monster India) ────────────────────────────────────────────
+
+router.addHandler('FOUNDIT_HUB', async (context) => {
+    await extractFounditHub(context);
+});
+
+router.addHandler('FOUNDIT_DETAIL', async (context) => {
+    const { page, request, log, pushData } = context;
+
+    // Try Ollama first
+    const ollamaOk = await ollamaExtractAndSave(page, request, pushData, log, 'FOUNDIT_DETAIL');
+    if (ollamaOk) return;
+
+    // Fallback: selector-based extraction
+    const data = await extractFounditDetail(context);
+    if (data) await saveJob(data as Record<string, unknown>, pushData, log);
+});
+
+// ─── Shine.com ────────────────────────────────────────────────────────────────
+
+router.addHandler('SHINE_HUB', async (context) => {
+    await extractShineHub(context);
+});
+
+router.addHandler('SHINE_DETAIL', async (context) => {
+    const { page, request, log, pushData } = context;
+
+    // Try Ollama first
+    const ollamaOk = await ollamaExtractAndSave(page, request, pushData, log, 'SHINE_DETAIL');
+    if (ollamaOk) return;
+
+    // Fallback: selector-based extraction
+    const data = await extractShineDetail(context);
+    if (data) await saveJob(data as Record<string, unknown>, pushData, log);
+});
+
+// ─── TimesJobs ────────────────────────────────────────────────────────────────
+
+router.addHandler('TIMESJOBS_HUB', async (context) => {
+    await extractTimesJobsHub(context);
+});
+
+router.addHandler('TIMESJOBS_DETAIL', async (context) => {
+    const { page, request, log, pushData } = context;
+
+    // Try Ollama first
+    const ollamaOk = await ollamaExtractAndSave(page, request, pushData, log, 'TIMESJOBS_DETAIL');
+    if (ollamaOk) return;
+
+    // Fallback: selector-based extraction
+    const data = await extractTimesJobsDetail(context);
+    if (data) await saveJob(data as Record<string, unknown>, pushData, log);
+});
+
+// ─── Wellfound (ex-AngelList) ─────────────────────────────────────────────────
+
+router.addHandler('WELLFOUND_HUB', async (context) => {
+    await extractWellfoundHub(context);
+});
+
+router.addHandler('WELLFOUND_DETAIL', async (context) => {
+    const { page, request, log, pushData } = context;
+
+    // Try Ollama first
+    const ollamaOk = await ollamaExtractAndSave(page, request, pushData, log, 'WELLFOUND_DETAIL');
+    if (ollamaOk) return;
+
+    // Fallback: selector-based extraction
+    const data = await extractWellfoundDetail(context);
     if (data) await saveJob(data as Record<string, unknown>, pushData, log);
 });

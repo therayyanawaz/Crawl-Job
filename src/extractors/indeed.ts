@@ -35,7 +35,7 @@ import {
     IndeedSelectors,
     buildIndeedSearchUrl,
     getIndeedStartOffset,
-} from '../config/indeed';
+} from '../config/indeed.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

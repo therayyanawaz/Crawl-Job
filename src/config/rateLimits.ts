@@ -275,6 +275,56 @@ const DOMAIN_CONFIGS: Record<string, RateLimitConfig> = {
         requiresAuth: false,
         notes: 'AI-matched roles. Good for mid-level but has some fresher listings too.'
     },
+
+    // ── Foundit.in (ex-Monster India) ───────────────────────────────────
+    // Server-rendered with moderate bot protection.
+    // BASE_DELAY_MS = 3000, max concurrency = 1 per the strategy doc.
+    'foundit.in': {
+        domain: 'foundit.in',
+        maxRequestsPerMinute: 8,
+        minDelayMs: 3_000,
+        jitterMs: 2_500,
+        maxConcurrentPerDomain: 1,
+        riskLevel: 'MEDIUM',
+        businessHoursMultiplier: 1.5,
+        backoffMultiplier: 2,
+        maxBackoffMs: 5 * 60 * 1000,
+        requiresAuth: false,
+        notes: 'Ex-Monster India. Moderate detection. Keep concurrency=1 to avoid blocks.'
+    },
+
+    // ── Shine.com ───────────────────────────────────────────────────────
+    // India-focused job board. Server-rendered with minimal bot detection.
+    // BASE_DELAY_MS = 2500, max concurrency = 2 per the strategy doc.
+    'shine.com': {
+        domain: 'shine.com',
+        maxRequestsPerMinute: 12,
+        minDelayMs: 2_500,
+        jitterMs: 2_000,
+        maxConcurrentPerDomain: 2,
+        riskLevel: 'LOW',
+        businessHoursMultiplier: 1.2,
+        backoffMultiplier: 1.5,
+        maxBackoffMs: 3 * 60 * 1000,
+        requiresAuth: false,
+        notes: 'India-focused. Server-rendered, low bot detection. Good fresher listings.'
+    },
+
+    // ── TimesJobs ───────────────────────────────────────────────────────
+    // Indian job portal, server-rendered tabular layout.
+    'timesjobs.com': {
+        domain: 'timesjobs.com',
+        maxRequestsPerMinute: 10,
+        minDelayMs: 4_000,
+        jitterMs: 2_500,
+        maxConcurrentPerDomain: 2,
+        riskLevel: 'LOW',
+        businessHoursMultiplier: 1.2,
+        backoffMultiplier: 1.5,
+        maxBackoffMs: 4 * 60 * 1000,
+        requiresAuth: false,
+        notes: 'India-focused. Server-rendered. Classic HTML structure.'
+    },
 };
 
 // ─── Default Fallback ─────────────────────────────────────────────────────────

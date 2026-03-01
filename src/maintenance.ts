@@ -31,9 +31,9 @@
  */
 
 import 'dotenv/config';
-import { archiveOldDatasets, listArchives } from './utils/archive';
-import { cleanupArchives, printStorageUsage } from './utils/cleanup';
-import { uploadAllPendingArchives } from './utils/cloudUpload';
+import { archiveOldDatasets, listArchives } from './utils/archive.js';
+import { cleanupArchives, printStorageUsage } from './utils/cleanup.js';
+import { uploadAllPendingArchives } from './utils/cloudUpload.js';
 import { log } from 'crawlee';
 
 // ─── Argument Parsing ─────────────────────────────────────────────────────────
@@ -119,7 +119,7 @@ async function main(): Promise<void> {
         // ── help / unknown ───────────────────────────────────────────────────
         default: {
             console.log(`
-Job Crawler — Storage Maintenance CLI
+Crawl-Job — Storage Maintenance CLI
 ══════════════════════════════════════
 
 Commands:

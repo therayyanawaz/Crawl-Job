@@ -17,7 +17,7 @@
  */
 
 import { log } from 'crawlee';
-import { getRateLimitConfig } from '../config/rateLimits';
+import { getRateLimitConfig } from '../config/rateLimits.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

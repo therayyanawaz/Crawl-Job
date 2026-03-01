@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # deploy/deploy.sh
 #
-# Production deployment script for job-crawler.
+# Production deployment script for crawl-job.
 #
 # USAGE:
-#   sudo -u job-crawler bash deploy/deploy.sh          # first deploy
-#   sudo -u job-crawler bash deploy/deploy.sh --update # subsequent updates
+#   sudo -u crawl-job bash deploy/deploy.sh          # first deploy
+#   sudo -u crawl-job bash deploy/deploy.sh --update # subsequent updates
 #
-# The script must be run as the job-crawler user (not root) so that
+# The script must be run as the crawl-job user (not root) so that
 # nvm and npm paths resolve correctly.
 #
 # WHAT IT DOES:
@@ -29,10 +29,10 @@ IFS=$'\n\t'
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-PROJECT_DIR="/opt/job-crawler"
-SERVICE_NAME="job-crawler"
+PROJECT_DIR="/opt/crawl-job"
+SERVICE_NAME="crawl-job"
 NODE_VERSION="v20.19.0"
-NVM_DIR="/home/job-crawler/.nvm"
+NVM_DIR="/home/crawl-job/.nvm"
 NODE_BIN="${NVM_DIR}/versions/node/${NODE_VERSION}/bin"
 NODE="${NODE_BIN}/node"
 NPM="${NODE_BIN}/npm"
@@ -61,9 +61,9 @@ echo "════════════════════════�
 
 step "0. Environment validation"
 
-# Must be running as job-crawler user
-if [[ "$(whoami)" != "job-crawler" ]]; then
-    error "This script must be run as 'job-crawler'. Use: sudo -u job-crawler bash deploy/deploy.sh"
+# Must be running as crawl-job user
+if [[ "$(whoami)" != "crawl-job" ]]; then
+    error "This script must be run as 'crawl-job'. Use: sudo -u crawl-job bash deploy/deploy.sh"
 fi
 
 # Node binary must exist
@@ -158,8 +158,8 @@ step "5. Permissions"
 
 # Ensure storage directory exists and is owned by the service user
 mkdir -p "${PROJECT_DIR}/storage"
-chown -R job-crawler:job-crawler "${PROJECT_DIR}/storage" 2>/dev/null \
-    || warn "Could not chown storage/ — run: sudo chown -R job-crawler:job-crawler ${PROJECT_DIR}/storage"
+chown -R crawl-job:crawl-job "${PROJECT_DIR}/storage" 2>/dev/null \
+    || warn "Could not chown storage/ — run: sudo chown -R crawl-job:crawl-job ${PROJECT_DIR}/storage"
 
 success "Permissions verified."
 
@@ -168,7 +168,7 @@ success "Permissions verified."
 step "6. Service restart"
 
 # Check if running as a user that can control systemctl
-# (job-crawler user needs: sudo systemctl restart job-crawler)
+# (crawl-job user needs: sudo systemctl restart crawl-job)
 if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
     info "Service is running. Restarting…"
     sudo systemctl restart "$SERVICE_NAME" \
@@ -227,10 +227,10 @@ echo "════════════════════════�
 # ─── Rollback function (not called automatically) ─────────────────────────────
 #
 # To roll back to the previous build manually:
-#   sudo systemctl stop job-crawler
-#   sudo -u job-crawler bash -c '
-#     BACKUP=$(ls -1dt /opt/job-crawler/.backups/* | head -1)
-#     cp -r "$BACKUP/dist" /opt/job-crawler/dist
+#   sudo systemctl stop crawl-job
+#   sudo -u crawl-job bash -c '
+#     BACKUP=$(ls -1dt /opt/crawl-job/.backups/* | head -1)
+#     cp -r "$BACKUP/dist" /opt/crawl-job/dist
 #   '
-#   sudo systemctl start job-crawler
+#   sudo systemctl start crawl-job
 #
