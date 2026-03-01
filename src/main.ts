@@ -70,6 +70,7 @@ import { fetchHimalayasRss } from './sources/himalayasRss.js';
 import { checkOllamaHealth, setOllamaAvailable, isOllamaAvailable } from './services/ollamaExtractor.js';
 import { detectPaidProxy } from './utils/proxyUtils.js';
 import { ensureRequestInterception } from './utils/requestInterception.js';
+import { getRequestLatencyMs, markRequestStart } from './utils/requestTiming.js';
 import 'dotenv/config';
 import { env } from './config/env.js';
 
@@ -385,7 +386,10 @@ const maxConcurrency = hasPaidProxy
                     // page.route can fail if context is already closed — safe to ignore
                 }
 
-                if (!ENABLE_RATE_LIMITING) return;
+                if (!ENABLE_RATE_LIMITING) {
+                    markRequestStart(request);
+                    return;
+                }
 
                 const domain = extractDomain(request.url);
                 const config = getRateLimitConfig(domain);
@@ -419,6 +423,7 @@ const maxConcurrency = hasPaidProxy
                             config.riskLevel === 'MEDIUM' ? 45_000 : 30_000;
                     gotoOptions.timeout = navTimeout;
                     gotoOptions.waitUntil = 'domcontentloaded';
+                    markRequestStart(request);
                 } catch (err) {
                     await releaseDomainSlotIfAcquired(request);
                     throw err;
@@ -430,9 +435,8 @@ const maxConcurrency = hasPaidProxy
         postNavigationHooks: [
             async ({ request, response, page, log: hookLog }) => {
                 try {
-                    const startedAt = (request as any).__startedAt as number | undefined;
-                    if (startedAt) recordRequestSuccess(Date.now() - startedAt);
-                    else recordRequestSuccess(0);
+                    const latencyMs = getRequestLatencyMs(request);
+                    recordRequestSuccess(latencyMs ?? undefined);
 
                     if (!ENABLE_RATE_LIMITING) return;
 
