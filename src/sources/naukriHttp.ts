@@ -17,6 +17,7 @@
 import { log } from 'crawlee';
 import * as cheerio from 'cheerio';
 import type { RawJobListing, SearchQuery, SourceResult } from './types.js';
+import { addUniqueJob, createFingerprintSet } from './dedupFingerprint.js';
 
 const SOURCE_NAME = 'naukri';
 
@@ -113,6 +114,7 @@ async function fetchNaukriApi(query: string, location: string, proxyUrl?: string
                 job.experienceText ?? undefined,
             postedDate: job.footerPlaceholderLabel ?? job.createdDate ?? undefined,
             source: SOURCE_NAME,
+            platformJobId: job.jobId ? String(job.jobId) : undefined,
         })).filter((j: RawJobListing) => j.title);
 
     } catch (err: any) {
@@ -126,6 +128,7 @@ async function fetchNaukriApi(query: string, location: string, proxyUrl?: string
 function parseNaukriHtml(html: string): RawJobListing[] {
     const $ = cheerio.load(html);
     const jobs: RawJobListing[] = [];
+    const seenFingerprints = createFingerprintSet();
 
     // Naukri job cards (Expanded selectors for recent updates)
     $('[class*="jobTuple"], [class*="srp-jobtuple"], article[class*="jobCard"], .srp-jobtuple, .jobTuple, .cust-job-tuple').each((_, el) => {
@@ -143,7 +146,7 @@ function parseNaukriHtml(html: string): RawJobListing[] {
         const url = href.startsWith('http') ? href : `https://www.naukri.com${href}`;
 
         if (title) {
-            jobs.push({
+            addUniqueJob({
                 title,
                 company: company || 'Unknown',
                 location,
@@ -152,7 +155,7 @@ function parseNaukriHtml(html: string): RawJobListing[] {
                 salary,
                 jobType: experience,
                 source: SOURCE_NAME,
-            });
+            }, jobs, seenFingerprints);
         }
     });
 
@@ -162,9 +165,8 @@ function parseNaukriHtml(html: string): RawJobListing[] {
             const data = JSON.parse($(el).html() ?? '');
             const items = Array.isArray(data) ? data : [data];
             for (const item of items) {
-                if (item?.['@type'] === 'JobPosting' && item.title &&
-                    !jobs.some(j => j.title === item.title)) {
-                    jobs.push({
+                if (item?.['@type'] === 'JobPosting' && item.title) {
+                    addUniqueJob({
                         title: item.title,
                         company: item.hiringOrganization?.name ?? 'Unknown',
                         location: item.jobLocation?.address?.addressLocality ?? undefined,
@@ -174,7 +176,10 @@ function parseNaukriHtml(html: string): RawJobListing[] {
                         jobType: item.employmentType ?? undefined,
                         postedDate: item.datePosted ?? undefined,
                         source: SOURCE_NAME,
-                    });
+                        platformJobId: item.identifier?.value
+                            ? String(item.identifier.value)
+                            : undefined,
+                    }, jobs, seenFingerprints);
                 }
             }
         } catch { /* skip */ }
@@ -188,6 +193,7 @@ function parseNaukriHtml(html: string): RawJobListing[] {
 export async function fetchNaukriJobs(query: SearchQuery): Promise<SourceResult> {
     const start = Date.now();
     const allJobs: RawJobListing[] = [];
+    const seenFingerprints = createFingerprintSet(allJobs);
     const location = query.location ?? 'India';
     const proxyUrl = process.env.PROXY_URLS?.split(',')[0]?.trim();
 
@@ -197,7 +203,9 @@ export async function fetchNaukriJobs(query: SearchQuery): Promise<SourceResult>
         // Try API first (faster, cleaner data)
         const apiJobs = await fetchNaukriApi(query.keywords, location, proxyUrl);
         if (apiJobs.length > 0) {
-            allJobs.push(...apiJobs);
+            for (const job of apiJobs) {
+                addUniqueJob(job, allJobs, seenFingerprints);
+            }
             log.info(`[Naukri] API returned ${apiJobs.length} jobs`);
         }
 
@@ -263,9 +271,7 @@ export async function fetchNaukriJobs(query: SearchQuery): Promise<SourceResult>
 
                     const pageJobs = parseNaukriHtml(html);
                     for (const job of pageJobs) {
-                        if (!allJobs.some(j => j.title === job.title && j.company === job.company)) {
-                            allJobs.push(job);
-                        }
+                        addUniqueJob(job, allJobs, seenFingerprints);
                     }
                     log.info(`[Naukri] HTML ${url}: found ${pageJobs.length} jobs`);
 

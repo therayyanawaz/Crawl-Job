@@ -39,6 +39,7 @@ const tests = [
                 ENABLE_INDEED: 'true',
                 ENABLE_ALERTS: 'false',
                 MIN_JOBS_BEFORE_HEADLESS: '25',
+                HEADLESS_SKIP_THRESHOLD: '30',
             });
 
             if (result.status !== 0) {
@@ -64,6 +65,9 @@ const tests = [
             if (parsed.MIN_JOBS_BEFORE_HEADLESS !== 25) {
                 throw new Error(`MIN_JOBS_BEFORE_HEADLESS expected 25, got ${parsed.MIN_JOBS_BEFORE_HEADLESS}`);
             }
+            if (parsed.HEADLESS_SKIP_THRESHOLD !== 30) {
+                throw new Error(`HEADLESS_SKIP_THRESHOLD expected 30, got ${parsed.HEADLESS_SKIP_THRESHOLD}`);
+            }
         },
     },
     {
@@ -75,6 +79,7 @@ const tests = [
                 PGDATABASE: undefined,
                 ENABLE_ALERTS: undefined,
                 MIN_JOBS_BEFORE_HEADLESS: undefined,
+                HEADLESS_SKIP_THRESHOLD: undefined,
             });
 
             if (result.status !== 0) {
@@ -96,6 +101,9 @@ const tests = [
             }
             if (parsed.MIN_JOBS_BEFORE_HEADLESS !== 15) {
                 throw new Error(`expected default MIN_JOBS_BEFORE_HEADLESS 15, got ${parsed.MIN_JOBS_BEFORE_HEADLESS}`);
+            }
+            if (parsed.HEADLESS_SKIP_THRESHOLD !== 25) {
+                throw new Error(`expected default HEADLESS_SKIP_THRESHOLD 25, got ${parsed.HEADLESS_SKIP_THRESHOLD}`);
             }
             if (parsed.HEALTH_CHECK_INTERVAL_MS !== 300000) {
                 throw new Error(`expected default HEALTH_CHECK_INTERVAL_MS 300000, got ${parsed.HEALTH_CHECK_INTERVAL_MS}`);
