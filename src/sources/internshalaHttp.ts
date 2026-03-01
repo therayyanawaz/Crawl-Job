@@ -16,6 +16,7 @@
 import { log } from 'crawlee';
 import * as cheerio from 'cheerio';
 import type { RawJobListing, SearchQuery, SourceResult } from './types.js';
+import { addUniqueJob, createFingerprintSet } from './dedupFingerprint.js';
 
 const SOURCE_NAME = 'internshala';
 
@@ -34,6 +35,7 @@ function buildInternshalaUrls(query: string): string[] {
 function parseInternshalaHtml(html: string): RawJobListing[] {
     const $ = cheerio.load(html);
     const jobs: RawJobListing[] = [];
+    const seenFingerprints = createFingerprintSet();
 
     // Internshala internship cards
     $('.individual_internship, .internship_meta, [class*="internship-card"]').each((_, el) => {
@@ -55,7 +57,7 @@ function parseInternshalaHtml(html: string): RawJobListing[] {
         const description = descParts.join(' | ').trim();
 
         if (title && url.includes('/internship/')) {
-            jobs.push({
+            addUniqueJob({
                 title,
                 company: company || 'Unknown',
                 location,
@@ -64,7 +66,7 @@ function parseInternshalaHtml(html: string): RawJobListing[] {
                 salary: stipend,
                 jobType: 'Internship',
                 source: SOURCE_NAME,
-            });
+            }, jobs, seenFingerprints);
         }
     });
 
@@ -77,8 +79,8 @@ function parseInternshalaHtml(html: string): RawJobListing[] {
                 if (match) {
                     const data = JSON.parse(match[1]);
                     for (const item of data) {
-                        if (item.title && !jobs.some(j => j.title === item.title)) {
-                            jobs.push({
+                        if (item.title) {
+                            addUniqueJob({
                                 title: item.title,
                                 company: item.company_name ?? 'Unknown',
                                 location: item.location_names?.join(', ') ?? undefined,
@@ -87,7 +89,8 @@ function parseInternshalaHtml(html: string): RawJobListing[] {
                                 salary: item.stipend?.salary ?? undefined,
                                 jobType: 'Internship',
                                 source: SOURCE_NAME,
-                            });
+                                platformJobId: item.id ? String(item.id) : undefined,
+                            }, jobs, seenFingerprints);
                         }
                     }
                 }
@@ -103,6 +106,7 @@ function parseInternshalaHtml(html: string): RawJobListing[] {
 export async function fetchInternshalaJobs(query: SearchQuery): Promise<SourceResult> {
     const start = Date.now();
     const allJobs: RawJobListing[] = [];
+    const seenFingerprints = createFingerprintSet(allJobs);
 
     log.info(`[Internshala] Starting HTTP scrape: "${query.keywords}"`);
 
@@ -168,9 +172,7 @@ export async function fetchInternshalaJobs(query: SearchQuery): Promise<SourceRe
                 log.info(`[Internshala] ${url}: found ${pageJobs.length} listings`);
 
                 for (const job of pageJobs) {
-                    if (!allJobs.some(j => j.title === job.title && j.company === job.company)) {
-                        allJobs.push(job);
-                    }
+                    addUniqueJob(job, allJobs, seenFingerprints);
                 }
 
                 // Polite delay between URLs
