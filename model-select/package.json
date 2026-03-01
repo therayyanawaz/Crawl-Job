@@ -1,0 +1,41 @@
+{
+  "name": "model-select",
+  "version": "1.0.0",
+  "description": "Interactive CLI to configure AI providers and select models",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "model-select": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean --target node18",
+    "start": "node dist/index.js",
+    "dev": "tsup src/index.ts --format esm --watch --target node18",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "cli",
+    "ai",
+    "models",
+    "typescript"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^5.4.1",
+    "clipboardy": "^4.0.0",
+    "commander": "^13.1.0",
+    "conf": "^13.1.0",
+    "inquirer": "^12.9.4",
+    "keytar": "^7.9.0",
+    "ora": "^8.2.0",
+    "update-notifier": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@types/update-notifier": "^6.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.8.2",
+    "vitest": "^2.0.0"
+  }
+}
