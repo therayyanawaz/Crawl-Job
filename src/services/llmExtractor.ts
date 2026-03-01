@@ -39,6 +39,12 @@ export interface NormalizedJobRecord extends OllamaJobRecord {
 }
 
 const SYSTEM_PROMPT = 'You are a structured data extraction engine. Always respond with valid JSON only. Never add commentary.';
+const ANTHROPIC_SYSTEM_PROMPT = 'You are a structured data extraction engine. You MUST respond with valid JSON only. No markdown. No code fences. No commentary. No explanation. Only raw JSON.';
+const ANTHROPIC_PROMPT_SUFFIX = 'IMPORTANT: Your entire response must be a valid JSON array. Start with [ and end with ].\nDo not include any other text, markdown, or explanation before or after the JSON.';
+const SUPPORTS_JSON_MODE = new Set([
+    'openai', 'openai-codex', 'groq', 'cerebras',
+    'openrouter', 'zai', 'volcengine', 'byteplus', 'minimax',
+]);
 
 const EXTRACTION_PROMPT = (markdown: string, pageUrl: string, sourceName: string) => `
 You are a job data extraction engine. Extract ALL job listings visible in the content below.
@@ -114,7 +120,7 @@ function buildHeaders(config: LLMProviderConfig): Record<string, string> {
     return headers;
 }
 
-export function htmlToMarkdown(html: string): string {
+export function htmlToMarkdown(html: string, maxChars: number = 5000): string {
     const td = new TurndownService({ headingStyle: 'atx' });
 
     const cleaned = html
@@ -127,7 +133,7 @@ export function htmlToMarkdown(html: string): string {
         .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
         .replace(/<img[^>]*>/gi, '');
 
-    return td.turndown(cleaned).slice(0, 5000);
+    return td.turndown(cleaned).slice(0, maxChars);
 }
 
 export function buildRequestPayload(
@@ -160,7 +166,7 @@ export function buildRequestPayload(
     }
 
     if (config.apiFormat === 'openai') {
-        const body = {
+        const body: Record<string, unknown> = {
             model: config.modelName,
             messages: [
                 { role: 'system', content: SYSTEM_PROMPT },
@@ -170,6 +176,10 @@ export function buildRequestPayload(
             max_tokens: config.maxTokens,
             stream: false,
         };
+
+        if (SUPPORTS_JSON_MODE.has(config.provider)) {
+            body.response_format = { type: 'json_object' };
+        }
 
         return {
             url: buildOpenAIResourceUrl(config.baseUrl, 'chat/completions'),
@@ -182,8 +192,8 @@ export function buildRequestPayload(
         const body = {
             model: config.modelName,
             max_tokens: config.maxTokens,
-            system: SYSTEM_PROMPT,
-            messages: [{ role: 'user', content: prompt }],
+            system: ANTHROPIC_SYSTEM_PROMPT,
+            messages: [{ role: 'user', content: `${prompt}\n\n${ANTHROPIC_PROMPT_SUFFIX}` }],
         };
 
         return {
@@ -207,6 +217,7 @@ export function buildRequestPayload(
         generationConfig: {
             temperature: config.temperature,
             maxOutputTokens: config.maxTokens,
+            responseMimeType: 'application/json',
         },
     };
 
@@ -272,24 +283,125 @@ export function parseResponseContent(config: LLMProviderConfig, data: unknown): 
     return contentToText(message.content);
 }
 
+function logTokenUsage(provider: string, data: unknown): void {
+    if (!data || typeof data !== 'object') {
+        return;
+    }
+
+    const d = data as Record<string, unknown>;
+
+    if (d.usage && typeof d.usage === 'object') {
+        const u = d.usage as Record<string, number>;
+        if (u.total_tokens) {
+            console.info(
+                `[LLMUsage] ${provider} — prompt: ${u.prompt_tokens ?? '?'} ` +
+                `completion: ${u.completion_tokens ?? '?'} ` +
+                `total: ${u.total_tokens} tokens`
+            );
+            return;
+        }
+    }
+
+    if (d.usage && typeof d.usage === 'object') {
+        const u = d.usage as Record<string, number>;
+        if (u.input_tokens) {
+            console.info(
+                `[LLMUsage] ${provider} — input: ${u.input_tokens} ` +
+                `output: ${u.output_tokens ?? '?'} tokens`
+            );
+            return;
+        }
+    }
+
+    if (d.usageMetadata && typeof d.usageMetadata === 'object') {
+        const u = d.usageMetadata as Record<string, number>;
+        console.info(
+            `[LLMUsage] ${provider} — prompt: ${u.promptTokenCount ?? '?'} ` +
+            `output: ${u.candidatesTokenCount ?? '?'} ` +
+            `total: ${u.totalTokenCount ?? '?'} tokens`
+        );
+    }
+}
+
+async function fetchWithRetry(
+    url: string,
+    options: RequestInit,
+    maxRetries: number = 3
+): Promise<Response> {
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            const res = await fetch(url, options);
+
+            if (res.status === 429 || res.status >= 500) {
+                const retryAfter = res.headers.get('retry-after');
+                const parsedRetryAfter = retryAfter ? Number.parseInt(retryAfter, 10) : Number.NaN;
+                const waitMs = Number.isFinite(parsedRetryAfter)
+                    ? parsedRetryAfter * 1000
+                    : Math.min(1000 * Math.pow(2, attempt) + Math.random() * 500, 30000);
+
+                console.warn(
+                    `[LLMExtractor] HTTP ${res.status} on attempt ${attempt + 1}/${maxRetries}. ` +
+                    `Retrying in ${Math.round(waitMs / 1000)}s...`
+                );
+
+                if (attempt < maxRetries - 1) {
+                    await new Promise((resolve) => setTimeout(resolve, waitMs));
+                    continue;
+                }
+
+                return res;
+            }
+
+            return res;
+        } catch (err) {
+            lastError = err as Error;
+            const waitMs = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 500, 15000);
+            console.warn(
+                `[LLMExtractor] Network error on attempt ${attempt + 1}/${maxRetries}: ` +
+                `${(err as Error).message}. Retrying in ${Math.round(waitMs / 1000)}s...`
+            );
+            if (attempt < maxRetries - 1) {
+                await new Promise((resolve) => setTimeout(resolve, waitMs));
+            }
+        }
+    }
+
+    throw lastError ?? new Error('fetchWithRetry: all attempts failed');
+}
+
+function getMarkdownCap(provider: string): number {
+    const LOW_CAP = new Set(['anthropic', 'openai', 'openai-codex', 'google']);
+    const HIGH_CAP = new Set(['groq', 'cerebras', 'ollama', 'lmstudio']);
+
+    if (LOW_CAP.has(provider)) {
+        return 3500;
+    }
+    if (HIGH_CAP.has(provider)) {
+        return 7000;
+    }
+
+    return 5000;
+}
+
 export async function extractJobsFromHtml(
     html: string,
     pageUrl: string,
     sourceName: string,
     ollamaBaseUrl: string = OLLAMA_BASE_URL
 ): Promise<OllamaJobRecord[]> {
-    const markdown = htmlToMarkdown(html);
-
-    if (markdown.trim().length < 50) {
-        logExtractorWarn(`Markdown too short (${markdown.length} chars) for ${sourceName} — skipping`);
-        return [];
-    }
-
     const config = loadLLMConfig();
     const callerProvidedOverride = arguments.length >= 4;
     const activeConfig: LLMProviderConfig = callerProvidedOverride
         ? { ...config, baseUrl: ollamaBaseUrl }
         : config;
+
+    const markdown = htmlToMarkdown(html, getMarkdownCap(activeConfig.provider));
+    if (markdown.trim().length < 50) {
+        logExtractorWarn(`Markdown too short (${markdown.length} chars) for ${sourceName} — skipping`);
+        return [];
+    }
 
     const prompt = EXTRACTION_PROMPT(markdown, pageUrl, sourceName);
     const payload = buildRequestPayload(activeConfig, prompt);
@@ -298,18 +410,19 @@ export async function extractJobsFromHtml(
     logQueue(`Depth: ${llmQueueDepth} (starting ${sourceName})`);
 
     try {
-        const res = await fetch(payload.url, {
+        const res = await fetchWithRetry(payload.url, {
             method: 'POST',
             headers: payload.headers,
             body: payload.body,
             signal: AbortSignal.timeout(activeConfig.timeoutMs),
-        });
+        }, activeConfig.provider === 'ollama' || activeConfig.provider === 'lmstudio' ? 1 : 3);
 
         if (!res.ok) {
             throw new Error(`LLM error: ${res.status} ${res.statusText}`);
         }
 
-        const data = await res.json();
+        const data = await res.json() as unknown;
+        logTokenUsage(activeConfig.provider, data);
         const raw = parseResponseContent(activeConfig, data).trim();
 
         let parsed: unknown;
@@ -452,7 +565,7 @@ export async function checkLLMHealth(config: LLMProviderConfig = loadLLMConfig()
                 console.error('[LLMHealth] ❌ google not reachable: API key is missing');
                 return false;
             }
-            url = `${trimTrailingSlash(config.baseUrl)}/v1beta/models?key=${encodeURIComponent(config.apiKey)}`;
+            url = `https://generativelanguage.googleapis.com/v1beta/models?key=${config.apiKey}`;
         } else {
             url = buildOpenAIResourceUrl(config.baseUrl, 'models');
         }
