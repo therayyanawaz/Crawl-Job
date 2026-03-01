@@ -17,7 +17,7 @@
  */
 
 import { log } from 'crawlee';
-import type { RawJobListing, SearchQuery, SourceResult } from './types';
+import type { RawJobListing, SearchQuery, SourceResult } from './types.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

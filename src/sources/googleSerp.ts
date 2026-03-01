@@ -22,7 +22,7 @@
 
 import { log } from 'crawlee';
 import * as cheerio from 'cheerio';
-import type { RawJobListing, SearchQuery, SourceResult } from './types';
+import type { RawJobListing, SearchQuery, SourceResult } from './types.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
