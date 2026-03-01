@@ -1,5 +1,6 @@
 import { detectRateLimitByStatus, getBackoffDelay } from '../dist/utils/rateLimitHandler.js';
 import { getRateLimitConfig } from '../dist/config/rateLimits.js';
+import { readFileSync } from 'node:fs';
 
 const testCases = [
     {
@@ -51,6 +52,24 @@ const testCases = [
                 } else {
                     delete process.env.RATE_LIMIT_BACKOFF_MULTIPLIER;
                 }
+            }
+        },
+    },
+    {
+        name: '429 failedRequestHandler path uses handleViolation as the only backoff sleep authority',
+        run: async () => {
+            const source = readFileSync('src/main.ts', 'utf-8');
+            const branchMatch = source.match(/if\s*\(status\s*===\s*429\)\s*\{([\s\S]*?)\n\s*\}/);
+            if (!branchMatch) {
+                throw new Error('could not locate 429 failedRequestHandler branch');
+            }
+
+            const branchBody = branchMatch[1];
+            if (!branchBody.includes('await handleViolation(')) {
+                throw new Error('expected 429 path to call handleViolation');
+            }
+            if (branchBody.includes('await sleep(')) {
+                throw new Error('429 path should not have an extra local sleep after handleViolation');
             }
         },
     },

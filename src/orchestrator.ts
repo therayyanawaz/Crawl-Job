@@ -28,6 +28,7 @@ import { z } from 'zod';
 import { isDuplicateJob, markJobAsStored } from './utils/dedup.js';
 import { saveJobToDb } from './utils/jobStore.js';
 import type { StorableJob } from './utils/jobStore.js';
+import { enqueuePersistenceTask } from './utils/persistenceQueue.js';
 
 // ── Source imports
 import { fetchSerperJobs } from './sources/serperApi.js';
@@ -92,9 +93,10 @@ async function saveJobFromSource(raw: RawJobListing, dataset: Dataset): Promise<
 
     try {
         await dataset.pushData(clean);
-        void markJobAsStored(clean);
-        // Save to PostgreSQL (`crawl_job` database) — non-blocking
-        saveJobToDb(clean as unknown as StorableJob).catch(() => null);
+        enqueuePersistenceTask(async () => {
+            await markJobAsStored(clean);
+            await saveJobToDb(clean as unknown as StorableJob);
+        });
         log.info(`[Orchestrator] ✓ Stored [${clean.source}]: "${clean.title}" @ "${clean.company}"`);
         return true;
     } catch (err) {

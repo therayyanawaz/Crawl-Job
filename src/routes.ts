@@ -31,6 +31,7 @@ import { Selectors } from './config.js';
 import { isDuplicateJob, markJobAsStored } from './utils/dedup.js';
 import { saveJobToDb } from './utils/jobStore.js';
 import type { StorableJob } from './utils/jobStore.js';
+import { enqueuePersistenceTask } from './utils/persistenceQueue.js';
 
 // ── Ollama LLM extraction
 import {
@@ -107,8 +108,10 @@ async function saveJob(
 
     try {
         await pushData(clean);
-        void markJobAsStored(clean);
-        saveJobToDb(clean as unknown as StorableJob).catch(() => null);
+        enqueuePersistenceTask(async () => {
+            await markJobAsStored(clean);
+            await saveJobToDb(clean as unknown as StorableJob);
+        });
         log.info(`[Router] Stored [${clean.source ?? 'unknown'}]: "${clean.title}" @ "${clean.company}"`);
     } catch (err) {
         log.error(`[Router] pushData() failed: ${err}`);

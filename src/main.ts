@@ -69,6 +69,14 @@ import type { SearchQuery, RawJobListing } from './sources/types.js';
 import { fetchHimalayasRss } from './sources/himalayasRss.js';
 import { checkOllamaHealth, setOllamaAvailable, isOllamaAvailable } from './services/ollamaExtractor.js';
 import { detectPaidProxy } from './utils/proxyUtils.js';
+import { ensureRequestInterception } from './utils/requestInterception.js';
+import { getRequestLatencyMs, markRequestStart } from './utils/requestTiming.js';
+import {
+    enqueuePersistenceTask,
+    drainPersistenceQueue,
+    getPersistConcurrency,
+    getPersistenceQueueStats,
+} from './utils/persistenceQueue.js';
 import 'dotenv/config';
 import { env } from './config/env.js';
 
@@ -124,6 +132,22 @@ function getSearchQueries(): SearchQuery[] {
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function markDomainSlotAcquired(request: any, domain: string): void {
+    request.userData = request.userData ?? {};
+    request.userData.__domainQueueDomain = domain;
+    request.userData.__domainQueueAcquired = true;
+}
+
+async function releaseDomainSlotIfAcquired(request: any): Promise<void> {
+    const userData = request?.userData;
+    if (!userData?.__domainQueueAcquired || !userData.__domainQueueDomain) {
+        return;
+    }
+
+    await releaseRequest(userData.__domainQueueDomain);
+    userData.__domainQueueAcquired = false;
 }
 
 // ─── Proxy Bootstrap ──────────────────────────────────────────────────────────
@@ -361,38 +385,17 @@ const maxConcurrency = hasPaidProxy
                     });
                 });
 
-                // Resource blocking — STRATEGY.md § 2, TIER 2
-                // Uses Crawlee's built-in blockRequests() — blocks by URL pattern
-                // Reduces bandwidth fingerprint + speeds up page loads significantly
-                await (page as any).route?.('**/*', () => { });  // ensure page context exists
+                // Resource blocking (idempotent): register request interception once per page.
                 try {
-                    await page.route('**/*', (route) => {
-                        const url = route.request().url();
-                        const type = route.request().resourceType();
-
-                        // Always block: tracking, analytics, ads
-                        const blockPatterns = [
-                            'google-analytics', 'facebook.net', 'hotjar',
-                            'doubleclick', 'googlesyndication', 'googletagmanager',
-                            'linkedin.com/li/track', 'bat.bing.com',
-                        ];
-
-                        if (blockPatterns.some(p => url.includes(p))) {
-                            return route.abort();
-                        }
-
-                        // Paid proxy: also block images, fonts, stylesheets for speed
-                        if (hasPaidProxy && ['image', 'stylesheet', 'font', 'media'].includes(type)) {
-                            return route.abort();
-                        }
-
-                        return route.continue();
-                    });
+                    await ensureRequestInterception(page as any, hasPaidProxy);
                 } catch {
                     // page.route can fail if context is already closed — safe to ignore
                 }
 
-                if (!ENABLE_RATE_LIMITING) return;
+                if (!ENABLE_RATE_LIMITING) {
+                    markRequestStart(request);
+                    return;
+                }
 
                 const domain = extractDomain(request.url);
                 const config = getRateLimitConfig(domain);
@@ -408,96 +411,107 @@ const maxConcurrency = hasPaidProxy
                 }
 
                 await recordRequest(domain);
+                markDomainSlotAcquired(request, domain);
 
-                // Free proxies get 2x the delay to avoid triggering blocks
-                const baseDelay = getDelayForDomain(domain);
-                const actualDelay = hasPaidProxy ? baseDelay : baseDelay * 2;
-                hookLog.info(
-                    `[RateLimit] ${domain} (${config.riskLevel}) — ` +
-                    `waiting ${(actualDelay / 1000).toFixed(1)}s before navigation ` +
-                    `(${hasPaidProxy ? 'paid' : 'free'} proxy mode).`
-                );
-                await sleep(actualDelay);
+                try {
+                    // Free proxies get 2x the delay to avoid triggering blocks
+                    const baseDelay = getDelayForDomain(domain);
+                    const actualDelay = hasPaidProxy ? baseDelay : baseDelay * 2;
+                    hookLog.info(
+                        `[RateLimit] ${domain} (${config.riskLevel}) — ` +
+                        `waiting ${(actualDelay / 1000).toFixed(1)}s before navigation ` +
+                        `(${hasPaidProxy ? 'paid' : 'free'} proxy mode).`
+                    );
+                    await sleep(actualDelay);
 
-                const navTimeout =
-                    config.riskLevel === 'HIGH' ? 60_000 :
-                        config.riskLevel === 'MEDIUM' ? 45_000 : 30_000;
-                gotoOptions.timeout = navTimeout;
-                gotoOptions.waitUntil = 'domcontentloaded';
+                    const navTimeout =
+                        config.riskLevel === 'HIGH' ? 60_000 :
+                            config.riskLevel === 'MEDIUM' ? 45_000 : 30_000;
+                    gotoOptions.timeout = navTimeout;
+                    gotoOptions.waitUntil = 'domcontentloaded';
+                    markRequestStart(request);
+                } catch (err) {
+                    await releaseDomainSlotIfAcquired(request);
+                    throw err;
+                }
             },
         ],
 
         // ── Post-Navigation Hook ──────────────────────────────────────────────
         postNavigationHooks: [
             async ({ request, response, page, log: hookLog }) => {
-                const domain = extractDomain(request.url);
-                await releaseRequest(domain);
+                try {
+                    const latencyMs = getRequestLatencyMs(request);
+                    recordRequestSuccess(latencyMs ?? undefined);
 
-                const startedAt = (request as any).__startedAt as number | undefined;
-                if (startedAt) recordRequestSuccess(Date.now() - startedAt);
-                else recordRequestSuccess(0);
+                    if (!ENABLE_RATE_LIMITING) return;
 
-                if (!ENABLE_RATE_LIMITING) return;
+                    const domain = extractDomain(request.url);
 
-                if (response && detectRateLimitByStatus(response)) {
-                    recordRateLimitHit();
-                    await handleViolation(domain, 'HTTP rate-limit/block', response.status());
-                    return;
+                    if (response && detectRateLimitByStatus(response)) {
+                        recordRateLimitHit();
+                        await handleViolation(domain, 'HTTP rate-limit/block', response.status());
+                        return;
+                    }
+
+                    const blocked = await isBlocked(page);
+                    if (blocked) {
+                        recordRateLimitHit();
+                        await handleViolation(domain, 'Soft block / CAPTCHA detected', null);
+                        return;
+                    }
+
+                    recordSuccess(domain);
+                } finally {
+                    await releaseDomainSlotIfAcquired(request);
                 }
-
-                const blocked = await isBlocked(page);
-                if (blocked) {
-                    recordRateLimitHit();
-                    await handleViolation(domain, 'Soft block / CAPTCHA detected', null);
-                    return;
-                }
-
-                recordSuccess(domain);
             },
         ],
 
         // ── Failed Request Handler (STRATEGY.md § 6 Error Rules) ────────────────
         failedRequestHandler: async ({ request, response, log: reqLog, session }) => {
-            const domain = extractDomain(request.url);
-            const status = response?.status();
+            try {
+                const domain = extractDomain(request.url);
+                const status = response?.status();
 
-            recordRequestFailed();
+                recordRequestFailed();
 
-            // Rule 1: Soft block (429 Too Many Requests)
-            if (status === 429) {
-                reqLog.warning(`[${domain}] Rate limited (429) — backing off ${request.retryCount} min`);
-                if (session) session.markBad();
-                recordRateLimitHit();
-                await handleViolation(domain, `HTTP 429 rate-limit`, status);
-                // Exponential backoff: 1min × retry count (per strategy doc)
-                await sleep(60_000 * Math.max(request.retryCount, 1));
-            }
+                // Rule 1: Soft block (429 Too Many Requests)
+                if (status === 429) {
+                    reqLog.warning(`[${domain}] Rate limited (429) — backing off ${request.retryCount} min`);
+                    if (session) session.markBad();
+                    recordRateLimitHit();
+                    await handleViolation(domain, `HTTP 429 rate-limit`, status);
+                }
 
-            // Rule 2: Hard block (403 Forbidden)
-            else if (status === 403) {
-                reqLog.error(`[${domain}] Hard blocked (403) — flagging for proxy escalation`);
-                if (session) session.markBad();
-                recordRateLimitHit();
-                request.userData.needsResidentialProxy = true;
-                await handleViolation(domain, `HTTP 403 hard block on final retry`, status);
-            }
+                // Rule 2: Hard block (403 Forbidden)
+                else if (status === 403) {
+                    reqLog.error(`[${domain}] Hard blocked (403) — flagging for proxy escalation`);
+                    if (session) session.markBad();
+                    recordRateLimitHit();
+                    request.userData.needsResidentialProxy = true;
+                    await handleViolation(domain, `HTTP 403 hard block on final retry`, status);
+                }
 
-            // Rule 3: Proxy auth failure
-            else if (status === 407) {
-                reqLog.warning(`[${domain}] Proxy authentication required for ${request.url}.`);
-                recordProxyFailure();
-            }
+                // Rule 3: Proxy auth failure
+                else if (status === 407) {
+                    reqLog.warning(`[${domain}] Proxy authentication required for ${request.url}.`);
+                    recordProxyFailure();
+                }
 
-            // Rule 4: Empty / malformed response
-            else if (!status || status >= 500) {
-                reqLog.error(
-                    `[${domain}] Request permanently failed ` +
-                    `(HTTP ${status ?? 'timeout/network'}): ${request.url}`
-                );
-            }
+                // Rule 4: Empty / malformed response
+                else if (!status || status >= 500) {
+                    reqLog.error(
+                        `[${domain}] Request permanently failed ` +
+                        `(HTTP ${status ?? 'timeout/network'}): ${request.url}`
+                    );
+                }
 
-            else {
-                reqLog.warning(`[${domain}] Unexpected status ${status}: ${request.url}`);
+                else {
+                    reqLog.warning(`[${domain}] Unexpected status ${status}: ${request.url}`);
+                }
+            } finally {
+                await releaseDomainSlotIfAcquired(request);
             }
         },
     });
@@ -579,6 +593,7 @@ async function runCrawler() {
     const hasPaidProxy = detectPaidProxy();
     log.info(`Proxy mode    : ${hasPaidProxy ? 'PAID ✓ (Headless always enabled)' : 'FREE/UNKNOWN (Headless conditional)'}`);
     log.info(`Ollama LLM    : checking at startup… (${env.OLLAMA_BASE_URL})`);
+    log.info(`Persistence   : queue concurrency ${getPersistConcurrency()}`);
 
     // ── Termination Handling ──────────────────────────────────────────────────
     let isShuttingDown = false;
@@ -588,6 +603,7 @@ async function runCrawler() {
         log.info(`\n[Main] 🛑 Received ${signal}. Shutting down gracefully...`);
 
         try {
+            await drainPersistenceQueue();
             cleanupDomainQueue();
             logDedupSummary();
             closeDedupStore();
@@ -679,8 +695,10 @@ async function runCrawler() {
                 const record: any = { ...job, scrapedAt: new Date().toISOString() };
                 const { isDuplicate } = await isDuplicateJob(record);
                 if (!isDuplicate) {
-                    void markJobAsStored(record);
-                    saveJobToDb(record as StorableJob).catch(() => null);
+                    enqueuePersistenceTask(async () => {
+                        await markJobAsStored(record);
+                        await saveJobToDb(record as StorableJob);
+                    });
                     apiJobsCount++;
                 }
             }
@@ -721,6 +739,13 @@ async function runCrawler() {
     }
 
     // 7. Cleanup
+    await drainPersistenceQueue();
+    const persistStats = getPersistenceQueueStats();
+    if (persistStats.active !== 0 || persistStats.queued !== 0) {
+        log.warning(
+            `[PersistenceQueue] Drain completed with non-zero stats: active=${persistStats.active}, queued=${persistStats.queued}`
+        );
+    }
     cleanupDomainQueue();
     logDedupSummary();
     closeDedupStore();
@@ -751,8 +776,14 @@ async function runCrawler() {
     log.info('Crawler pipeline completed.');
 }
 
-runCrawler().catch((err) => {
+runCrawler().catch(async (err) => {
     console.error('[FATAL]', err);
+    try {
+        await drainPersistenceQueue();
+        await closeDb();
+    } catch {
+        // no-op
+    }
     closeJsonLogger();
     closeFileLogger();
     process.exit(1);

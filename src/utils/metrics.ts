@@ -150,8 +150,17 @@ export function recordRequestStarted(): void {
 }
 
 /** Call when a request completes successfully (no exception). */
-export function recordRequestSuccess(responseTimeMs: number): void {
+export function recordRequestSuccess(responseTimeMs?: number): void {
     requestsSucceeded++;
+
+    if (
+        responseTimeMs === undefined ||
+        !Number.isFinite(responseTimeMs) ||
+        responseTimeMs < 0
+    ) {
+        return;
+    }
+
     // Ring-buffer insert
     if (responseTimes.length >= RT_RING_SIZE) responseTimes.shift();
     responseTimes.push(responseTimeMs);
