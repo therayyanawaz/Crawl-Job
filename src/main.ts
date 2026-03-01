@@ -71,6 +71,12 @@ import { checkOllamaHealth, setOllamaAvailable, isOllamaAvailable } from './serv
 import { detectPaidProxy } from './utils/proxyUtils.js';
 import { ensureRequestInterception } from './utils/requestInterception.js';
 import { getRequestLatencyMs, markRequestStart } from './utils/requestTiming.js';
+import {
+    enqueuePersistenceTask,
+    drainPersistenceQueue,
+    getPersistConcurrency,
+    getPersistenceQueueStats,
+} from './utils/persistenceQueue.js';
 import 'dotenv/config';
 import { env } from './config/env.js';
 
@@ -587,6 +593,7 @@ async function runCrawler() {
     const hasPaidProxy = detectPaidProxy();
     log.info(`Proxy mode    : ${hasPaidProxy ? 'PAID ✓ (Headless always enabled)' : 'FREE/UNKNOWN (Headless conditional)'}`);
     log.info(`Ollama LLM    : checking at startup… (${env.OLLAMA_BASE_URL})`);
+    log.info(`Persistence   : queue concurrency ${getPersistConcurrency()}`);
 
     // ── Termination Handling ──────────────────────────────────────────────────
     let isShuttingDown = false;
@@ -596,6 +603,7 @@ async function runCrawler() {
         log.info(`\n[Main] 🛑 Received ${signal}. Shutting down gracefully...`);
 
         try {
+            await drainPersistenceQueue();
             cleanupDomainQueue();
             logDedupSummary();
             closeDedupStore();
@@ -687,8 +695,10 @@ async function runCrawler() {
                 const record: any = { ...job, scrapedAt: new Date().toISOString() };
                 const { isDuplicate } = await isDuplicateJob(record);
                 if (!isDuplicate) {
-                    void markJobAsStored(record);
-                    saveJobToDb(record as StorableJob).catch(() => null);
+                    enqueuePersistenceTask(async () => {
+                        await markJobAsStored(record);
+                        await saveJobToDb(record as StorableJob);
+                    });
                     apiJobsCount++;
                 }
             }
@@ -729,6 +739,13 @@ async function runCrawler() {
     }
 
     // 7. Cleanup
+    await drainPersistenceQueue();
+    const persistStats = getPersistenceQueueStats();
+    if (persistStats.active !== 0 || persistStats.queued !== 0) {
+        log.warning(
+            `[PersistenceQueue] Drain completed with non-zero stats: active=${persistStats.active}, queued=${persistStats.queued}`
+        );
+    }
     cleanupDomainQueue();
     logDedupSummary();
     closeDedupStore();
@@ -759,8 +776,14 @@ async function runCrawler() {
     log.info('Crawler pipeline completed.');
 }
 
-runCrawler().catch((err) => {
+runCrawler().catch(async (err) => {
     console.error('[FATAL]', err);
+    try {
+        await drainPersistenceQueue();
+        await closeDb();
+    } catch {
+        // no-op
+    }
     closeJsonLogger();
     closeFileLogger();
     process.exit(1);
