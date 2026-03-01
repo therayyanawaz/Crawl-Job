@@ -69,6 +69,7 @@ import type { SearchQuery, RawJobListing } from './sources/types.js';
 import { fetchHimalayasRss } from './sources/himalayasRss.js';
 import { checkOllamaHealth, setOllamaAvailable, isOllamaAvailable } from './services/ollamaExtractor.js';
 import { detectPaidProxy } from './utils/proxyUtils.js';
+import { ensureRequestInterception } from './utils/requestInterception.js';
 import 'dotenv/config';
 import { env } from './config/env.js';
 
@@ -361,33 +362,9 @@ const maxConcurrency = hasPaidProxy
                     });
                 });
 
-                // Resource blocking — STRATEGY.md § 2, TIER 2
-                // Uses Crawlee's built-in blockRequests() — blocks by URL pattern
-                // Reduces bandwidth fingerprint + speeds up page loads significantly
-                await (page as any).route?.('**/*', () => { });  // ensure page context exists
+                // Resource blocking (idempotent): register request interception once per page.
                 try {
-                    await page.route('**/*', (route) => {
-                        const url = route.request().url();
-                        const type = route.request().resourceType();
-
-                        // Always block: tracking, analytics, ads
-                        const blockPatterns = [
-                            'google-analytics', 'facebook.net', 'hotjar',
-                            'doubleclick', 'googlesyndication', 'googletagmanager',
-                            'linkedin.com/li/track', 'bat.bing.com',
-                        ];
-
-                        if (blockPatterns.some(p => url.includes(p))) {
-                            return route.abort();
-                        }
-
-                        // Paid proxy: also block images, fonts, stylesheets for speed
-                        if (hasPaidProxy && ['image', 'stylesheet', 'font', 'media'].includes(type)) {
-                            return route.abort();
-                        }
-
-                        return route.continue();
-                    });
+                    await ensureRequestInterception(page as any, hasPaidProxy);
                 } catch {
                     // page.route can fail if context is already closed — safe to ignore
                 }
