@@ -29,6 +29,9 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:migrate:check": "tsx -e \"import('./src/utils/db.js').then(m=>m.pingDb()).then(ok=>{ console.log(ok?'✓ DB reachable':'✗ DB unreachable'); process.exit(ok?0:1); })\" ",
     "env:check": "node scripts/validate-env.mjs",
+    "benchmark:small": "npm run build && node scripts/benchmark-runner.mjs --profile small",
+    "benchmark:medium": "npm run build && node scripts/benchmark-runner.mjs --profile medium",
+    "benchmark:large": "npm run build && node scripts/benchmark-runner.mjs --profile large",
     "testsprite": "npx @testsprite/testsprite-mcp@latest"
   },
   "keywords": ["crawl-job", "web-scraping", "playwright", "crawlee", "india-jobs", "typescript", "postgresql", "ollama"],

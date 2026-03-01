@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - perf/p1-throughput
+      - ops/p2-ops-ci
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Benchmark profile to run
+        required: true
+        default: medium
+        type: choice
+        options:
+          - small
+          - medium
+          - large
+
+jobs:
+  validate:
+    name: Lint, Typecheck, Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+  benchmark-small:
+    name: Benchmark (small profile)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run benchmark (small)
+        run: node scripts/benchmark-runner.mjs --profile small --output artifacts/kpi-small.json
+
+      - name: Upload small benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kpi-small
+          path: artifacts/kpi-small.json
+
+  benchmark-manual:
+    name: Benchmark (manual medium/large)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run benchmark (selected profile)
+        run: node scripts/benchmark-runner.mjs --profile "${{ inputs.profile }}" --output "artifacts/kpi-${{ inputs.profile }}.json"
+
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kpi-${{ inputs.profile }}
+          path: artifacts/kpi-${{ inputs.profile }}.json

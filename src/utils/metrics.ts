@@ -72,6 +72,9 @@ export interface MetricsSnapshot {
     /** Average response time in ms over the last 100 requests. */
     avgResponseTimeMs: number;
 
+    /** p95 response time in ms over the last 100 requests. */
+    p95ResponseTimeMs: number;
+
     /** Peak memory usage recorded (RSS in MB). */
     peakMemoryMb: number;
 
@@ -236,6 +239,13 @@ export function getMetricsSnapshot(): MetricsSnapshot {
     const avgResponseTimeMs = responseTimes.length > 0
         ? Math.round(responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length)
         : 0;
+    const p95ResponseTimeMs = responseTimes.length > 0
+        ? (() => {
+            const sorted = [...responseTimes].sort((a, b) => a - b);
+            const index = Math.max(0, Math.ceil(sorted.length * 0.95) - 1);
+            return Math.round(sorted[index]);
+        })()
+        : 0;
 
     const currentMemoryMb = Math.round(process.memoryUsage().rss / 1_048_576);
     const uptimeMinutes = Math.max(1 / 60, (now - crawlStartedAt) / 60_000);
@@ -260,6 +270,7 @@ export function getMetricsSnapshot(): MetricsSnapshot {
         proxyFailures,
         requestsPerMinute: rpmWindow.length,  // count within rolling 60s = RPM
         avgResponseTimeMs,
+        p95ResponseTimeMs,
         peakMemoryMb: Math.round(peakMemoryMb),
         currentMemoryMb,
         crawlStartedAt,
@@ -297,7 +308,7 @@ export function logMetricsSummary(): void {
         `(${s.successRatePct}% ok) | ` +
         `jobs:${s.jobsExtracted} dedup:${s.jobsDeduplicated} stored:${s.jobsStored} persistFail:${s.jobsPersistenceFailed} | ` +
         `jobs/min:${s.jobsPerMinute} dedupRatio:${s.dedupRatioPct}% | ` +
-        `rpm:${s.requestsPerMinute} avgRt:${s.avgResponseTimeMs}ms | ` +
+        `rpm:${s.requestsPerMinute} avgRt:${s.avgResponseTimeMs}ms p95Rt:${s.p95ResponseTimeMs}ms | ` +
         `429s:${s.rateLimitHits} proxyFail:${s.proxyFailures} | ` +
         `mem:${s.currentMemoryMb}MB ` +
         (minsAgo !== null ? `| lastJob:${minsAgo}m ago` : '| lastJob:never')

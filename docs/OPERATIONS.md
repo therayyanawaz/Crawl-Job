@@ -115,7 +115,18 @@ Notes:
 - tests run against `dist/` artifacts
 - `npm test` includes build step automatically
 
-## 6. Runtime Artifacts to Monitor
+## 6. Deterministic Benchmarking
+
+```bash
+npm run benchmark:small
+npm run benchmark:medium
+npm run benchmark:large
+```
+
+Artifacts are written to `storage/benchmarks/kpi-<profile>.json`.
+See `docs/BENCHMARKS.md` for profile details.
+
+## 7. Runtime Artifacts to Monitor
 
 - `log.txt`
 - `storage/metrics-snapshot.json`
@@ -123,7 +134,7 @@ Notes:
 - `storage/rate-limit-report.json`
 - `storage/dedup-store.json`
 
-## 7. Health and Alerting
+## 8. Health and Alerting
 
 Health report severity values:
 
@@ -139,7 +150,7 @@ Alert channels supported by built-in dispatcher:
 
 Cooldown control: `ALERT_COOLDOWN_MIN`.
 
-## 8. Proxy Operations
+## 9. Proxy Operations
 
 Startup flow:
 
@@ -152,7 +163,7 @@ During headless run:
 
 - periodic revalidation and replenishment via interval timer
 
-## 9. Production Deployment Assets
+## 10. Production Deployment Assets
 
 ### Server Bootstrap
 
@@ -169,7 +180,7 @@ During headless run:
 - `deploy/crawl-job.service` - systemd unit template
 - `deploy/env.production` - production env template
 
-## 10. Recovery and Troubleshooting Playbook
+## 11. Recovery and Troubleshooting Playbook
 
 ### Process starts but zero jobs are stored
 
@@ -203,7 +214,7 @@ During headless run:
 - verify S3 credentials and endpoint
 - inspect per-archive manifest files for `uploadedAt`
 
-## 11. Safe Change Management
+## 12. Safe Change Management
 
 Before changing extraction logic or rate policies:
 
