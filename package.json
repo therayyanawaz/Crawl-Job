@@ -13,6 +13,8 @@
     "setup:export": "node model-select/dist/index.js export",
     "setup:show": "node model-select/dist/index.js show",
     "setup:list": "node model-select/dist/index.js list",
+    "smoke": "npx tsx scripts/smoke-test-llm.ts",
+    "report": "npx tsx scripts/llm-report.ts",
     "setup:ollama": "bash scripts/setup-ollama.sh",
     "export": "tsx src/export.ts",
     "build": "tsc",
@@ -43,6 +45,7 @@
   "license": "ISC",
   "description": "Crawl-Job: multi-platform crawler for the Indian job market — tiered scraping with Playwright, PostgreSQL, and Ollama LLM extraction",
   "dependencies": {
+    "chalk": "^5.6.2",
     "cheerio": "^1.2.0",
     "crawlee": "^3.16.0",
     "dotenv": "^17.3.1",

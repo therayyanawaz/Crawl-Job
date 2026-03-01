@@ -79,36 +79,56 @@ const SUPPORTS_JSON_MODE = new Set([
 ]);
 const OLLAMA_TOOL_MODELS = new Set(['llama3.3', 'llama3.1', 'qwen2.5', 'mistral', 'command-r']);
 
-const EXTRACTION_PROMPT = (markdown: string, pageUrl: string, sourceName: string) => `
-You are a job data extraction engine. Extract ALL job listings visible in the content below.
-Source platform: ${sourceName}
-Page URL: ${pageUrl}
+// Token savings with tool-calling prompt vs full schema prompt:
+// Full schema prompt: ~350 tokens per call
+// Tool-calling prompt: ~120 tokens per call
+// Savings: ~230 tokens/call
+// At 1000 calls/day on Claude Sonnet ($3/1M input tokens): ~$0.69/day saved
+const TOOL_CALLING_PROMPT = (markdown: string, pageUrl: string, sourceName: string): string => `
+Source: ${sourceName}
+URL: ${pageUrl}
+
+Extract ALL job listings from the content below.
+Rules:
+- isFresher=true if experience<=1yr OR title has intern/fresher/trainee/graduate/entry
+- Fix relative applyLinks: prepend domain from ${pageUrl}
+- Empty string for missing fields, null only for rawDescription
+
+Content:
+${markdown}
+`.trim();
+
+const FULL_SCHEMA_PROMPT = (markdown: string, pageUrl: string, sourceName: string): string => `
+You are a job data extraction engine. Extract ALL job listings from the content below.
+Source: ${sourceName}
+URL: ${pageUrl}
 
 Return ONLY a valid JSON array. No explanation. No markdown. No code fences.
-Each object must match this exact schema:
-{
-  "title": "exact job title",
-  "company": "company name",
-  "location": "city or remote",
-  "experience": "experience as stated on page",
-  "jobType": "Full Time | Internship | Part Time | Contract",
-  "applyLink": "full URL or relative path to apply",
-  "isFresher": true or false,
-  "fresherReason": "one sentence why",
-  "experienceNormalized": "Fresher | 0-1 years | 1-2 years | 2+ years | Unknown",
-  "rawDescription": "first 200 chars of job description or null"
-}
+Each object: { title, company, location, experience, jobType (Full Time|Internship|Part Time|Contract), applyLink (full URL), isFresher (bool), fresherReason, experienceNormalized (Fresher|0-1 years|1-2 years|2+ years|Unknown), rawDescription (string|null) }
 
 Rules:
-- isFresher = true if experience <= 1 year OR title contains intern/fresher/trainee/graduate/entry
-- isFresher = false if requires 2+ years experience
-- If applyLink is relative (e.g. /jobs/123), prepend the domain from pageUrl
-- If a field is not found, use empty string "" — never use null except for rawDescription
-- Extract ALL jobs visible on the page, not just the first one
+- isFresher=true if experience<=1yr OR title has intern/fresher/trainee/graduate/entry
+- Fix relative applyLinks: prepend domain from ${pageUrl}
+- Empty string for missing fields, null only for rawDescription
 
-Page content:
+Content:
 ${markdown}
-`;
+`.trim();
+
+function ollamaSupportsToolCalling(modelName: string): boolean {
+    const modelBase = modelName.split(':')[0].split('/').pop() ?? '';
+    return [...OLLAMA_TOOL_MODELS].some((m) => modelBase.includes(m));
+}
+
+function isToolCallingEnabled(config: LLMProviderConfig): boolean {
+    if (config.apiFormat === 'anthropic' || config.apiFormat === 'gemini') {
+        return true;
+    }
+    if (config.apiFormat === 'ollama') {
+        return ollamaSupportsToolCalling(config.modelName);
+    }
+    return SUPPORTS_JSON_MODE.has(config.provider);
+}
 
 function logExtractorWarn(message: string): void {
     console.warn(`[LLMExtractor] ${message}`);
@@ -171,14 +191,17 @@ export function htmlToMarkdown(html: string, maxChars: number = 5000): string {
 
 export function buildRequestPayload(
     config: LLMProviderConfig,
-    prompt: string
+    markdown: string,
+    pageUrl: string,
+    sourceName: string,
+    isToolCalling: boolean
 ): { url: string; headers: Record<string, string>; body: string } {
     const headers = buildHeaders(config);
+    const prompt = isToolCalling
+        ? TOOL_CALLING_PROMPT(markdown, pageUrl, sourceName)
+        : FULL_SCHEMA_PROMPT(markdown, pageUrl, sourceName);
 
     if (config.apiFormat === 'ollama') {
-        const modelBase = config.modelName.split(':')[0].split('/').pop() ?? '';
-        const ollamaSupportsTools = [...OLLAMA_TOOL_MODELS].some((m) => modelBase.includes(m));
-
         const body: Record<string, unknown> = {
             model: config.modelName,
             options: {
@@ -193,7 +216,7 @@ export function buildRequestPayload(
             stream: false,
         };
 
-        if (ollamaSupportsTools) {
+        if (isToolCalling) {
             body.tools = [{
                 type: 'function',
                 function: JOB_EXTRACTION_SCHEMA,
@@ -221,7 +244,7 @@ export function buildRequestPayload(
             stream: false,
         };
 
-        if (SUPPORTS_JSON_MODE.has(config.provider)) {
+        if (isToolCalling) {
             body.tools = [{
                 type: 'function',
                 function: JOB_EXTRACTION_SCHEMA,
@@ -538,8 +561,8 @@ async function _extractWithConfig(
         return [];
     }
 
-    const prompt = EXTRACTION_PROMPT(markdown, pageUrl, sourceName);
-    const payload = buildRequestPayload(activeConfig, prompt);
+    const isToolCalling = isToolCallingEnabled(activeConfig);
+    const payload = buildRequestPayload(activeConfig, markdown, pageUrl, sourceName, isToolCalling);
 
     llmQueueDepth++;
     logQueue(`Depth: ${llmQueueDepth} (starting ${sourceName})`);
