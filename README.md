@@ -1,50 +1,6 @@
-# 🚀 Crawl-Job
-
-<div align="center">
-
-![Tests](https://img.shields.io/badge/tests-39%20passed-brightgreen?style=flat-square&logo=jest)
-![TypeCheck](https://img.shields.io/badge/typecheck-passing-3178c6?style=flat-square&logo=typescript)
-![CI](https://img.shields.io/badge/CI-GitHub%20Actions-black?style=flat-square&logo=githubactions)
-![Version](https://img.shields.io/badge/version-v1.1.0-7c3aed?style=flat-square)
-![Node](https://img.shields.io/badge/node-v20.19.0-417e38?style=flat-square&logo=nodedotjs)
-![License](https://img.shields.io/badge/license-MIT-f59e0b?style=flat-square)
-
-</div>
+# 🚀 Job Crawler
 
 Reliable TypeScript crawler for fresher and early-career jobs using **API + RSS + HTTP + Playwright** with deduplication, PostgreSQL persistence, health checks, and alerting.
-
-## 🆕 What's New — v1.1.0
-
-> The crawler went from moderate optimization maturity to **production-grade correctness, throughput, and observability** in one release — across 14 targeted fixes, 3 new utility modules, and 9 new test suites.
-
-### 🛡️ P0 — Correctness Fixes
-
-| # | Fix | Module | Impact |
-|---|-----|--------|--------|
-| 1 | 🔁 Idempotent route interception | `src/utils/requestInterception.ts` | No handler accumulation per navigation |
-| 2 | 🔒 Domain concurrency release in `finally` | `src/main.ts` | Zero concurrency slot leaks on any outcome |
-| 3 | ⏱️ Request latency wired correctly | `src/utils/requestTiming.ts` | Real p95 latency — no more `NaN` |
-| 4 | 🚦 Single 429 backoff authority | `src/utils/rateLimitHandler.ts` | Removed duplicate sleep under rate pressure |
-| 5 | 💾 Bounded persistence queue + drain | `src/utils/persistenceQueue.ts` | `PERSIST_CONCURRENCY=15`, drained on shutdown |
-
-### 🚀 P1 — Throughput Improvements
-
-| # | Fix | Module | Impact |
-|---|-----|--------|--------|
-| 6 | 🧠 O(1) fingerprint dedup via `Set` | `src/sources/dedupFingerprint.ts` | Scales linearly — no O(n²) scan |
-| 7 | ⚙️ Parallel persistence batch runner | `src/utils/jobBatchRunner.ts` | Concurrent saves, bounded by queue |
-| 8 | 🧭 Headless launch threshold guard | `src/utils/headlessDecision.ts` | Skip browser when API tier already delivers |
-
-### 🔧 P2 — Ops, CI & Security
-
-| # | Fix | Module | Impact |
-|---|-----|--------|--------|
-| 9  | 📊 Real pipeline metrics wired | `src/utils/metrics.ts` | Extracted / deduped / stored counters live |
-| 10 | 🔐 Secrets externalized | `.env.example` + `validate-env.mjs` | No hardcoded credentials anywhere |
-| 11 | 🖥️ Node version unified to v20 | `.nvmrc` + deploy scripts | Zero environment drift |
-| 12 | 🤖 CI workflow | `.github/workflows/ci.yml` | Lint + typecheck + tests on every PR |
-| 13 | 📈 Deterministic benchmark profiles | `testdata/benchmark/` | KPI regression tracking per commit |
-| 14 | 🩺 Node16 ESM import compliance | `src/sources/*.ts` | `tsc --noEmit` clean under `moduleResolution:node16` |
 
 ## ✨ Why this setup works
 
@@ -168,6 +124,54 @@ Verbose mode:
 npm run start:verbose
 ```
 
+## LLM Configuration
+
+Crawl-Job uses AI to extract structured job data from scraped HTML pages.
+It supports **any AI provider** via the bundled `model-select` tool.
+
+### Quick Setup (Recommended)
+
+```bash
+npm run setup
+```
+
+This launches an interactive CLI where you:
+1. Select your AI provider (Anthropic, OpenAI, Gemini, Ollama, Groq, and 15+ more)
+2. Enter your API key (validated live before saving)
+3. Select a model
+4. Config is saved to `.env.modelselect` automatically
+
+On next `npm start`, Crawl-Job reads `.env.modelselect` and uses your chosen provider.
+
+### Manual Setup
+
+Create `.env.modelselect` in the project root:
+```env
+MODEL_ID=anthropic/claude-sonnet-4-5
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+```
+
+### Supported Providers
+
+| Provider | Example Model ID | Needs API Key |
+|---|---|---|
+| Ollama (local) | `ollama/qwen2.5` | No |
+| LM Studio (local) | `lmstudio/llama3.3` | No |
+| Anthropic | `anthropic/claude-sonnet-4-5` | Yes |
+| OpenAI | `openai/gpt-5.1-codex` | Yes |
+| Google Gemini | `google/gemini-3-pro-preview` | Yes |
+| Groq | `groq/llama-3.3-70b-versatile` | Yes |
+| OpenRouter | `openrouter/anthropic/claude-sonnet-4-5` | Yes |
+| Mistral | `mistral/mistral-large-latest` | Yes |
+| xAI / Grok | `xai/grok-3` | Yes |
+| Z.AI / GLM | `zai/glm-5` | Yes |
+| + 9 more | Run `npm run setup:list` | — |
+
+### Backward Compatibility
+
+If no `.env.modelselect` exists, Crawl-Job falls back to legacy `OLLAMA_*` env vars.
+Existing `.env` configurations continue to work with zero changes.
+
 ## 📌 Command reference
 
 ### Runtime and build
@@ -255,25 +259,6 @@ Health levels:
 - `critical` 🚨
 
 When alerts are enabled, notifications are sent using cooldown control via `ALERT_COOLDOWN_MIN`.
-
-### 📊 Benchmark KPIs — v1.1.0 (small profile)
-
-| Metric | Value |
-|--------|-------|
-| 🏃 Jobs / min | `60` |
-| 🔁 Dedup hit ratio | `25%` |
-| ⏱️ p95 request latency | `142 ms` |
-| 🌐 Proxy pass rate | `96.7%` |
-| 🚦 429 rate | `4.4%` |
-
-```bash
-# Run benchmark locally — emits storage/benchmarks/kpi-small.json
-npm run benchmark:small
-
-# Medium and large profiles (no network, deterministic)
-npm run benchmark:medium
-npm run benchmark:large
-```
 
 ## 🧩 Extend the crawler
 

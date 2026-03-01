@@ -68,7 +68,7 @@ import { createRunContext } from './utils/runContext.js';
 import { isDuplicateJob, markJobAsStored } from './utils/dedup.js';
 import type { SearchQuery, RawJobListing } from './sources/types.js';
 import { fetchHimalayasRss } from './sources/himalayasRss.js';
-import { checkOllamaHealth, setOllamaAvailable, isOllamaAvailable } from './services/ollamaExtractor.js';
+import { initLLM } from './utils/llmSetup.js';
 import { detectPaidProxy } from './utils/proxyUtils.js';
 import { ensureRequestInterception } from './utils/requestInterception.js';
 import { getRequestLatencyMs, markRequestStart } from './utils/requestTiming.js';
@@ -650,20 +650,8 @@ async function runCrawler() {
     initDomainQueue();
     initDedupStore();
 
-    // 0b. Ollama health check — set OLLAMA_AVAILABLE flag
-    log.info('[Ollama] Checking Ollama availability…');
-    const ollamaHealthy = await checkOllamaHealth();
-    setOllamaAvailable(ollamaHealthy);
-    if (ollamaHealthy) {
-        log.info('[Ollama] ✅ LLM extraction ENABLED — Ollama will process page HTML');
-    } else {
-        log.warning('[Ollama] ⚠ Ollama not available — falling back to CSS selector extraction');
-        log.warning('[Ollama]   To enable: ollama serve && ollama pull ' + env.OLLAMA_MODEL);
-    }
-    logStructured('info', 'Ollama health check', {
-        service: 'ollama',
-        status: ollamaHealthy ? 'ok' : 'unavailable',
-    });
+    // 0b. Provider-aware LLM setup (model-select bridge + health check)
+    await initLLM();
 
     // 1. Verify PostgreSQL connectivity
     log.info('[DB] Checking PostgreSQL connection to "crawl_job" database…');

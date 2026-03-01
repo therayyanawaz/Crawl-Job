@@ -20,6 +20,7 @@ temp/
 
 # Local environments and secrets
 .env
+.env.modelselect
 .env.local
 .env.*.local
 .env.*.secret
