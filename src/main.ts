@@ -30,6 +30,7 @@ import {
     initMetrics, closeMetrics, logMetricsSummary,
     recordRequestStarted, recordRequestSuccess, recordRequestFailed,
     recordRateLimitHit, recordProxyFailure,
+    recordJobExtracted, recordJobDeduplicated, recordJobStored, recordJobPersistenceFailed,
 } from './utils/metrics.js';
 import { logHealthReport, writeHealthReport } from './utils/healthCheck.js';
 import { sendAlert, alertOnHealthReport, sendStartupAlert, sendCompletionAlert } from './utils/alerts.js';
@@ -694,13 +695,26 @@ async function runCrawler() {
             const sr = result.value;
             for (const job of sr.jobs) {
                 const record: any = { ...job, scrapedAt: new Date().toISOString() };
+                recordJobExtracted();
                 const { isDuplicate } = await isDuplicateJob(record);
                 if (!isDuplicate) {
                     enqueuePersistenceTask(async () => {
-                        await markJobAsStored(record);
-                        await saveJobToDb(record as StorableJob);
+                        try {
+                            await markJobAsStored(record);
+                            const insertedId = await saveJobToDb(record as StorableJob);
+                            if (insertedId !== null) {
+                                recordJobStored();
+                            } else {
+                                recordJobPersistenceFailed();
+                            }
+                        } catch {
+                            recordJobPersistenceFailed();
+                            throw new Error(`[API] Persistence failed for "${record.title ?? 'unknown'}"`);
+                        }
                     });
                     apiJobsCount++;
+                } else {
+                    recordJobDeduplicated();
                 }
             }
             log.info(`[API] ${sr.source}: ${sr.jobs.length} jobs fetched, ${sr.error ? 'ERROR: ' + sr.error : 'OK'}`);

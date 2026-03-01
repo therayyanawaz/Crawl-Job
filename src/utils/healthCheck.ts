@@ -266,40 +266,17 @@ function checkProxyPool(s: MetricsSnapshot): HealthCheck {
 function checkZeroJobsEarlyRun(s: MetricsSnapshot): HealthCheck {
     const name = 'zero_jobs_early';
     const uptimeMin = Math.round(s.uptimeSeconds / 60);
-
-    // Part 5 FIX: Import API job count from main.ts
-    // If API sources returned > 0 jobs, don't fire the zero-jobs warning
-    let apiJobs = 0;
-    try {
-        // Dynamic import to avoid circular dependency — getApiJobsCount is a simple getter
-        const mainModule = require('../main');
-        apiJobs = mainModule?.getApiJobsCount?.() ?? 0;
-    } catch {
-        // If import fails, treat as 0 API jobs
-    }
-
-    const totalJobs = s.jobsExtracted + apiJobs;
-
-    if (uptimeMin >= T.zeroJobsAfterMin && totalJobs === 0) {
+    if (uptimeMin >= T.zeroJobsAfterMin && s.jobsExtracted === 0) {
         return {
             name, passed: false, severity: 'warning',
-            reason: `Zero jobs extracted after ${uptimeMin} min (API: ${apiJobs}, Playwright: ${s.jobsExtracted}) — check API keys and seed URLs`,
+            reason: `Zero jobs extracted after ${uptimeMin} min — check API keys, source endpoints, and seed URLs`,
             value: 0, threshold: T.zeroJobsAfterMin,
-        };
-    }
-
-    // If API returned jobs but Playwright returned 0 → still OK (not degraded)
-    if (uptimeMin >= T.zeroJobsAfterMin && s.jobsExtracted === 0 && apiJobs > 0) {
-        return {
-            name, passed: true, severity: 'warning',
-            reason: `Playwright returned 0 but API sources returned ${apiJobs} — status OK`,
-            value: apiJobs, threshold: T.zeroJobsAfterMin,
         };
     }
 
     return {
         name, passed: true, severity: 'warning', reason: 'OK',
-        value: totalJobs, threshold: 0
+        value: s.jobsExtracted, threshold: 0
     };
 }
 
@@ -330,9 +307,10 @@ export function getHealthStatus(): HealthReport {
     else if (warningChecks.length > 0) severity = 'degraded';
 
     const failedReasons = failedChecks.map((c) => `[${c.severity.toUpperCase()}] ${c.reason}`);
+    const productivity = `${snapshot.jobsPerMinute} jobs/min, dedup ${snapshot.dedupRatioPct}% (${snapshot.jobsDeduplicated}/${snapshot.jobsExtracted}), stored ${snapshot.jobsStored}`;
     const summary = severity === 'healthy'
-        ? `Crawler healthy — ${snapshot.jobsExtracted} jobs extracted, ${snapshot.successRatePct}% success rate`
-        : `Crawler ${severity.toUpperCase()}: ` + failedReasons.join(' | ');
+        ? `Crawler healthy — ${snapshot.jobsExtracted} jobs extracted, ${snapshot.successRatePct}% success rate, ${productivity}`
+        : `Crawler ${severity.toUpperCase()}: ` + failedReasons.join(' | ') + ` | Productivity: ${productivity}`;
 
     return {
         severity,

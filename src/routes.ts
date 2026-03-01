@@ -32,6 +32,12 @@ import { isDuplicateJob, markJobAsStored } from './utils/dedup.js';
 import { saveJobToDb } from './utils/jobStore.js';
 import type { StorableJob } from './utils/jobStore.js';
 import { enqueuePersistenceTask } from './utils/persistenceQueue.js';
+import {
+    recordJobDeduplicated,
+    recordJobExtracted,
+    recordJobPersistenceFailed,
+    recordJobStored,
+} from './utils/metrics.js';
 
 // ── Ollama LLM extraction
 import {
@@ -99,9 +105,11 @@ async function saveJob(
         log.warning(`[Router] Validation failed: ${err}`);
         return;
     }
+    recordJobExtracted();
 
     const { isDuplicate, reason } = await isDuplicateJob(clean);
     if (isDuplicate) {
+        recordJobDeduplicated();
         log.debug(`[Router] DUPLICATE (${reason}): "${clean.title}" @ "${clean.company}"`);
         return;
     }
@@ -109,8 +117,18 @@ async function saveJob(
     try {
         await pushData(clean);
         enqueuePersistenceTask(async () => {
-            await markJobAsStored(clean);
-            await saveJobToDb(clean as unknown as StorableJob);
+            try {
+                await markJobAsStored(clean);
+                const insertedId = await saveJobToDb(clean as unknown as StorableJob);
+                if (insertedId !== null) {
+                    recordJobStored();
+                } else {
+                    recordJobPersistenceFailed();
+                }
+            } catch {
+                recordJobPersistenceFailed();
+                throw new Error(`[Router] Persistence failed for "${clean.title}" @ "${clean.company}"`);
+            }
         });
         log.info(`[Router] Stored [${clean.source ?? 'unknown'}]: "${clean.title}" @ "${clean.company}"`);
     } catch (err) {
