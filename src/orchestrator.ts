@@ -29,6 +29,7 @@ import { isDuplicateJob, markJobAsStored } from './utils/dedup.js';
 import { saveJobToDb } from './utils/jobStore.js';
 import type { StorableJob } from './utils/jobStore.js';
 import { enqueuePersistenceTask } from './utils/persistenceQueue.js';
+import { runJobsParallel } from './utils/jobBatchRunner.js';
 
 // ── Source imports
 import { fetchSerperJobs } from './sources/serperApi.js';
@@ -145,6 +146,19 @@ async function runTier(
     return { results, totalJobs };
 }
 
+async function processTierResultsParallel(
+    results: SourceResult[],
+    dataset: Dataset
+): Promise<{ stored: number; duplicates: number }> {
+    // Ordering between jobs is not required for correctness: dedup + persistence are idempotent.
+    const jobs = results.flatMap((result) => result.jobs);
+    const run = await runJobsParallel(jobs, (job) => saveJobFromSource(job, dataset));
+    return {
+        stored: run.stored,
+        duplicates: run.skipped,
+    };
+}
+
 // ─── Main Orchestrator ────────────────────────────────────────────────────────
 
 export interface OrchestratorResult {
@@ -185,28 +199,20 @@ export async function runOrchestrator(
     const tier1Fetchers = queries.map(q => () => fetchSerperJobs(q));
     const tier1 = await runTier('Serper.dev API', 'TIER_0', tier1Fetchers);
 
-    let tier1stored = 0;
-    for (const result of tier1.results) {
-        for (const job of result.jobs) {
-            const saved = await saveJobFromSource(job, dataset);
-            if (saved) { totalStored++; tier1stored++; }
-            else totalDuplicatesSkipped++;
-        }
-    }
+    const tier1Persist = await processTierResultsParallel(tier1.results, dataset);
+    const tier1stored = tier1Persist.stored;
+    totalStored += tier1Persist.stored;
+    totalDuplicatesSkipped += tier1Persist.duplicates;
     tierBreakdown['serper_api'] = { raw: tier1.totalJobs, stored: tier1stored };
 
     // ── TIER 2: Jobicy RSS (SECONDARY — always runs as supplement) ────────────
     const tier2Fetchers = queries.map(q => () => fetchJobicyRss(q));
     const tier2 = await runTier('Jobicy RSS', 'TIER_0', tier2Fetchers);
 
-    let tier2stored = 0;
-    for (const result of tier2.results) {
-        for (const job of result.jobs) {
-            const saved = await saveJobFromSource(job, dataset);
-            if (saved) { totalStored++; tier2stored++; }
-            else totalDuplicatesSkipped++;
-        }
-    }
+    const tier2Persist = await processTierResultsParallel(tier2.results, dataset);
+    const tier2stored = tier2Persist.stored;
+    totalStored += tier2Persist.stored;
+    totalDuplicatesSkipped += tier2Persist.duplicates;
     tierBreakdown['jobicy_rss'] = { raw: tier2.totalJobs, stored: tier2stored };
 
     // ── TIER 3: RSS + HTTP sources (TERTIARY — run in parallel) ───────────────
@@ -220,14 +226,10 @@ export async function runOrchestrator(
     }
     const tier3 = await runTier('RSS & HTTP Sources', 'TIER_1', tier3Fetchers);
 
-    let tier3stored = 0;
-    for (const result of tier3.results) {
-        for (const job of result.jobs) {
-            const saved = await saveJobFromSource(job, dataset);
-            if (saved) { totalStored++; tier3stored++; }
-            else totalDuplicatesSkipped++;
-        }
-    }
+    const tier3Persist = await processTierResultsParallel(tier3.results, dataset);
+    const tier3stored = tier3Persist.stored;
+    totalStored += tier3Persist.stored;
+    totalDuplicatesSkipped += tier3Persist.duplicates;
     tierBreakdown['indeed_rss'] = {
         raw: tier3.results.filter(r => r.source === 'indeed_rss').reduce((s, r) => s + r.jobs.length, 0),
         stored: 0,
